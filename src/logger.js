@@ -7,6 +7,7 @@ const EXPORT_FIELDS = [
   'tool_name', 'duration_ms', 'tokens_used',
   'input_tokens', 'output_tokens', 'cache_read_tokens', 'cache_creation_tokens',
   'cost_usd', 'model',
+  'session_tokens', 'session_cost_usd',
   'status', 'error', 'sequence_number', 'session_id',
 ];
 
@@ -52,6 +53,8 @@ export class Logger {
       error: e.error || null,
       sequence_number: ++this.sequence,
       session_id: this.sessionId,
+      session_tokens: e.session_tokens ?? null,
+      session_cost_usd: e.session_cost_usd ?? null,
       input: e.input ?? null,
       output: e.output ?? null,
     };

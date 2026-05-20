@@ -87,7 +87,27 @@ export class WatchMyAgents {
   tokenStats() { return this.tracker.stats(); }
 
   async flush() { await this.exporter.flush(); }
-  async shutdown() { this.exporter.stop(); await this.exporter.flush(); }
+
+  async shutdown() {
+    const stats = this.tracker.stats().total;
+    const entry = await this.logger.write({
+      action_type: 'session_end',
+      tool_name: null,
+      framework: this.framework,
+      status: 'ok',
+      session_tokens: {
+        input: stats.input,
+        output: stats.output,
+        cache_read: stats.cache_read,
+        cache_creation: stats.cache_creation,
+        total: stats.sum,
+      },
+      session_cost_usd: stats.cost_usd,
+    });
+    this.exporter.enqueue(this.logger.toExportRecord(entry));
+    this.exporter.stop();
+    await this.exporter.flush();
+  }
   get logPath() { return this.logger._pathForToday(); }
   get actionCount() { return this.logger.count; }
 }
