@@ -100,10 +100,16 @@ async function main() {
     if (done) break;
   }
 
+  const stats = wma.tokenStats();
   await wma.shutdown();
 
+  const t = stats.total;
   process.stdout.write(`\n[WatchMyAgents] actions captured: ${wma.actionCount}\n`);
   process.stdout.write(`[WatchMyAgents] log file: ${wma.logPath}\n`);
+  process.stdout.write(`[WatchMyAgents] tokens: ${t.sum} (in=${t.input} out=${t.output} cache_r=${t.cache_read} cache_w=${t.cache_creation})\n`);
+  process.stdout.write(`[WatchMyAgents] estimated cost: $${t.cost_usd.toFixed(6)}\n`);
+  process.stdout.write(`[WatchMyAgents] by tool: ${JSON.stringify(stats.by_tool)}\n`);
+  process.stdout.write(`[WatchMyAgents] by model: ${JSON.stringify(stats.by_model)}\n`);
 }
 
 main().catch(e => { process.stderr.write(`error: ${e.stack || e.message}\n`); process.exit(1); });

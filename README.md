@@ -51,12 +51,45 @@ await claude.messages.create({ model: 'claude-3-5-sonnet-20241022', /* ... */ })
 Each NDJSON entry contains:
 
 ```
-id, agent_id, framework, timestamp, action_type,
-tool_name, duration_ms, tokens_used, status, error,
-sequence_number, session_id, input, output
+id, agent_id, framework, timestamp, action_type, tool_name,
+model, duration_ms,
+tokens_used, input_tokens, output_tokens,
+cache_read_tokens, cache_creation_tokens, cost_usd,
+status, error, sequence_number, session_id, input, output
 ```
 
 `input` and `output` are written **only to local logs**. They are **never** included in the encrypted export — only metadata is sent.
+
+## Token & cost monitoring
+
+Per-action token usage is split into `input_tokens`, `output_tokens`,
+`cache_read_tokens`, `cache_creation_tokens` and `tokens_used` (total). When
+the model is known (Claude 3.5 / 3 / Haiku / Opus, GPT-4o / 4-turbo / 3.5),
+`cost_usd` is estimated from a built-in pricing table. Override pricing via:
+
+```js
+new WatchMyAgents({
+  tokenPricing: {
+    'my-model': { input: 1.0, output: 4.0, cache_read: 0.1, cache_write: 1.25 },
+  },
+})
+```
+
+Get aggregated stats at any time:
+
+```js
+wma.tokenStats()
+// {
+//   total: { input, output, cache_read, cache_creation, sum, cost_usd },
+//   by_tool:   { 'get_weather':       { ..., calls: 2 } },
+//   by_action: { 'llm_call':          { ..., calls: 3 } },
+//   by_model:  { 'claude-3-5-sonnet-...': { ..., calls: 2 } },
+// }
+```
+
+The Claude, OpenAI and LangChain adapters auto-populate token splits from
+each provider's `usage` payload. For custom agents, pass them via the
+`watch()` `meta` argument or `logAction()`.
 
 ## Anonymization
 

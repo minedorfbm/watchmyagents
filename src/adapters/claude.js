@@ -16,16 +16,25 @@ export function createClaudeMonitor(opts = {}) {
         catch (e) { status = 'error'; error = e?.message || String(e); throw e; }
         finally {
           const u = res?.usage || {};
+          const inT = u.input_tokens || 0;
+          const outT = u.output_tokens || 0;
+          const cr = u.cache_read_input_tokens || 0;
+          const cw = u.cache_creation_input_tokens || 0;
           const toolUses = Array.isArray(res?.content)
             ? res.content.filter(b => b?.type === 'tool_use').map(b => b.name) : [];
           await wma.logAction({
             framework: 'claude', action_type: 'llm_call',
             tool_name: params?.model || 'messages.create',
+            model: params?.model || null,
             duration_ms: Date.now() - start,
-            tokens_used: (u.input_tokens || 0) + (u.output_tokens || 0) || null,
+            input_tokens: inT || null,
+            output_tokens: outT || null,
+            cache_read_tokens: cr || null,
+            cache_creation_tokens: cw || null,
+            tokens_used: (inT + outT + cr + cw) || null,
             status, error,
             input: { model: params?.model, message_count: params?.messages?.length, tool_count: params?.tools?.length || 0 },
-            output: { stop_reason: res?.stop_reason || null, input_tokens: u.input_tokens || null, output_tokens: u.output_tokens || null, tool_uses: toolUses },
+            output: { stop_reason: res?.stop_reason || null, tool_uses: toolUses },
           });
         }
       };
