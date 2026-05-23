@@ -59,7 +59,9 @@ async function main() {
 
   process.stdout.write(`[wma-fetch] resolving agent ${agentId}…\n`);
   const agent = await getAgent(apiKey, agentId).catch(e => die(`failed to GET agent: ${e.message}`));
-  const model = agent.model || agent.config?.model || null;
+  const rawModel = agent.model || agent.config?.model || null;
+  // API may return model as { id, speed } object or as a plain string.
+  const model = (rawModel && typeof rawModel === 'object') ? (rawModel.id || null) : rawModel;
   process.stdout.write(`[wma-fetch] model: ${model || '(unknown)'}\n`);
 
   let sessions;

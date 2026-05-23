@@ -112,11 +112,24 @@ export async function* fetchRawEvents(apiKey, sessionId, { types } = {}) {
 
 const RELEVANT_TYPES = [
   'span.model_request_start', 'span.model_request_end',
+  // User events (audit trail of human/orchestrator inputs)
+  'user.message', 'user.interrupt',
+  'user.tool_confirmation', 'user.custom_tool_result',
+  // Agent events
   'agent.message', 'agent.thinking',
   'agent.tool_use', 'agent.tool_result',
   'agent.mcp_tool_use', 'agent.mcp_tool_result',
   'agent.custom_tool_use',
+  'agent.thread_context_compacted',
+  'agent.thread_message_sent', 'agent.thread_message_received',
+  // Session lifecycle (security-critical: config changes, terminations)
   'session.error',
+  'session.updated',
+  'session.thread_created',
+  'session.status_running', 'session.status_idle',
+  'session.status_rescheduled', 'session.status_terminated',
+  'session.thread_status_running', 'session.thread_status_idle',
+  'session.thread_status_terminated',
 ];
 
 const tsMs = ev => Date.parse(ev.processed_at || ev.created_at || '') || null;
@@ -128,7 +141,12 @@ export async function* fetchSessionEntries({ apiKey, agentId, sessionId, model }
 
   const base = { framework: 'anthropic-managed', agent_id: agentId, session_id: sessionId };
 
-  for await (const ev of fetchRawEvents(apiKey, sessionId, { types: RELEVANT_TYPES })) {
+  // No server-side `types[]` filter: the API rejects unknown values, but the
+  // exact filterable set is undocumented & evolves. We pull everything and
+  // filter here, ensuring future event types are surfaced rather than dropped.
+  const RELEVANT = new Set(RELEVANT_TYPES);
+  for await (const ev of fetchRawEvents(apiKey, sessionId)) {
+    if (!RELEVANT.has(ev.type)) continue;
     const type = ev.type;
     const ts = ev.processed_at || ev.created_at || new Date().toISOString();
     const tsMillis = tsMs(ev);
@@ -148,7 +166,7 @@ export async function* fetchSessionEntries({ apiKey, agentId, sessionId, model }
       yield {
         ...base,
         action_type: 'llm_call',
-        tool_name: model || 'messages',
+        tool_name: null,
         model: model || null,
         timestamp: ts,
         duration_ms: (startTs && tsMillis) ? tsMillis - startTs : null,
@@ -158,6 +176,62 @@ export async function* fetchSessionEntries({ apiKey, agentId, sessionId, model }
         cache_creation_tokens: cw || null,
         tokens_used: (i + o + cr + cw) || null,
         status: ev.is_error ? 'error' : 'ok',
+      };
+      continue;
+    }
+
+    if (type === 'user.message') {
+      yield {
+        ...base,
+        action_type: 'user_message',
+        tool_name: null,
+        model: model || null,
+        timestamp: ts,
+        status: 'ok',
+        input: { content: ev.content || [] },
+      };
+      continue;
+    }
+
+    if (type === 'user.interrupt') {
+      yield {
+        ...base,
+        action_type: 'user_interrupt',
+        tool_name: null,
+        model: model || null,
+        timestamp: ts,
+        status: 'ok',
+      };
+      continue;
+    }
+
+    // Audit trail: who approved/denied which tool, with optional deny_message
+    if (type === 'user.tool_confirmation') {
+      const denied = ev.result === 'deny';
+      yield {
+        ...base,
+        action_type: 'tool_confirmation',
+        tool_name: null,
+        model: model || null,
+        timestamp: ts,
+        status: denied ? 'error' : 'ok',
+        input: { tool_use_id: ev.tool_use_id, result: ev.result },
+        output: { deny_message: ev.deny_message ?? null },
+        error: denied ? (ev.deny_message || 'denied').slice(0, 500) : null,
+      };
+      continue;
+    }
+
+    if (type === 'user.custom_tool_result') {
+      yield {
+        ...base,
+        action_type: 'custom_tool_result',
+        tool_name: null,
+        model: model || null,
+        timestamp: ts,
+        status: ev.is_error ? 'error' : 'ok',
+        input: { custom_tool_use_id: ev.custom_tool_use_id },
+        output: { content: ev.content ?? null },
       };
       continue;
     }
@@ -228,6 +302,74 @@ export async function* fetchSessionEntries({ apiKey, agentId, sessionId, model }
       continue;
     }
 
+    // Context window saturation — historic content may be lost
+    if (type === 'agent.thread_context_compacted') {
+      yield {
+        ...base,
+        action_type: 'context_compacted',
+        tool_name: null,
+        model: model || null,
+        timestamp: ts,
+        status: 'ok',
+        output: {
+          session_thread_id: ev.session_thread_id ?? null,
+          agent_name: ev.agent_name ?? null,
+        },
+      };
+      continue;
+    }
+
+    // Multi-agent: orchestrator/sub-agent message passing
+    if (type === 'agent.thread_message_sent' || type === 'agent.thread_message_received') {
+      const direction = type.endsWith('_sent') ? 'sent' : 'received';
+      yield {
+        ...base,
+        action_type: `thread_message_${direction}`,
+        tool_name: null,
+        model: model || null,
+        timestamp: ts,
+        status: 'ok',
+        output: {
+          session_thread_id: ev.session_thread_id ?? null,
+          agent_name: ev.agent_name ?? null,
+          content: ev.content ?? null,
+        },
+      };
+      continue;
+    }
+
+    // Security-critical: session configuration changed mid-flight.
+    // Docs say "Includes only the fields that changed."
+    if (type === 'session.updated') {
+      const { id: _id, type: _type, processed_at: _pa, created_at: _ca, ...changes } = ev;
+      yield {
+        ...base,
+        action_type: 'config_change',
+        tool_name: null,
+        model: model || null,
+        timestamp: ts,
+        status: 'ok',
+        output: { changes },
+      };
+      continue;
+    }
+
+    if (type === 'session.thread_created') {
+      yield {
+        ...base,
+        action_type: 'thread_created',
+        tool_name: null,
+        model: model || null,
+        timestamp: ts,
+        status: 'ok',
+        output: {
+          session_thread_id: ev.session_thread_id ?? null,
+          agent_name: ev.agent_name ?? null,
+        },
+      };
+      continue;
+    }
+
     if (type === 'session.error') {
       yield {
         ...base,
@@ -236,6 +378,34 @@ export async function* fetchSessionEntries({ apiKey, agentId, sessionId, model }
         timestamp: ts,
         status: 'error',
         error: (ev.error?.message || 'session error').slice(0, 500),
+      };
+      continue;
+    }
+
+    // session.status_{running,idle,rescheduled,terminated},
+    // session.thread_status_{running,idle,terminated}
+    // → state transitions, useful for security audit (e.g. inspecting
+    //   stop_reason for refusals, errors, max_tokens; terminated = fatal)
+    if (type.startsWith('session.status_') || type.startsWith('session.thread_status_')) {
+      const isThread = type.startsWith('session.thread_status_');
+      const prefix = isThread ? 'session.thread_status_' : 'session.status_';
+      const state = type.slice(prefix.length); // 'running' | 'idle' | 'rescheduled' | 'terminated'
+      const fatal = state === 'terminated';
+      yield {
+        ...base,
+        action_type: 'state_transition',
+        tool_name: null,
+        model: model || null,
+        timestamp: ts,
+        status: fatal ? 'error' : 'ok',
+        output: {
+          scope: isThread ? 'session_thread' : 'session',
+          state,
+          stop_reason: ev.stop_reason ?? null,
+          agent_name: ev.agent_name ?? null,
+          session_thread_id: ev.session_thread_id ?? null,
+        },
+        error: fatal ? (ev.stop_reason?.message || ev.stop_reason?.type || 'session terminated').slice(0, 500) : null,
       };
       continue;
     }

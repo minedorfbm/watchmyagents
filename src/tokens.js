@@ -32,6 +32,11 @@ export class TokenTracker {
   }
 
   record(entry) {
+    // Security-audit principle: count EVERY action, including zero-token ones
+    // (tool_use, message, thinking, user_message, errors…). Only skip meta-
+    // entries that are not actions themselves.
+    if (entry.action_type === 'session_end') return;
+
     const t = {
       input: entry.input_tokens || 0,
       output: entry.output_tokens || 0,
@@ -40,7 +45,6 @@ export class TokenTracker {
     };
     const sum = entry.tokens_used || (t.input + t.output + t.cache_read + t.cache_creation);
     const cost = entry.cost_usd || 0;
-    if (sum === 0 && cost === 0) return;
 
     this.total.input += t.input;
     this.total.output += t.output;
