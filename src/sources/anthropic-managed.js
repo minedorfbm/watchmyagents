@@ -112,6 +112,7 @@ export async function* fetchRawEvents(apiKey, sessionId, { types } = {}) {
 
 const RELEVANT_TYPES = [
   'span.model_request_start', 'span.model_request_end',
+  'agent.message', 'agent.thinking',
   'agent.tool_use', 'agent.tool_result',
   'agent.mcp_tool_use', 'agent.mcp_tool_result',
   'agent.custom_tool_use',
@@ -123,7 +124,7 @@ const tsMs = ev => Date.parse(ev.processed_at || ev.created_at || '') || null;
 export async function* fetchSessionEntries({ apiKey, agentId, sessionId, model }) {
   // Pair-tracking maps: event_id of the "start" → its timestamp + metadata
   const pendingModelReq = new Map();    // span.model_request_start.id → ts
-  const pendingToolUse = new Map();     // agent.tool_use.id → { ts, name, isMcp }
+  const pendingToolUse = new Map();     // agent.tool_use.id → { ts, name, isMcp, input }
 
   const base = { framework: 'anthropic-managed', agent_id: agentId, session_id: sessionId };
 
@@ -161,8 +162,40 @@ export async function* fetchSessionEntries({ apiKey, agentId, sessionId, model }
       continue;
     }
 
+    if (type === 'agent.message') {
+      yield {
+        ...base,
+        action_type: 'message',
+        tool_name: null,
+        model: model || null,
+        timestamp: ts,
+        status: 'ok',
+        output: { content: ev.content || [] },
+      };
+      continue;
+    }
+
+    if (type === 'agent.thinking') {
+      yield {
+        ...base,
+        action_type: 'thinking',
+        tool_name: null,
+        model: model || null,
+        timestamp: ts,
+        status: 'ok',
+        output: { thinking: ev.thinking ?? ev.content ?? null, signature: ev.signature ?? null },
+      };
+      continue;
+    }
+
     if (type === 'agent.tool_use' || type === 'agent.mcp_tool_use') {
-      pendingToolUse.set(ev.id, { ts: tsMillis, name: ev.name || 'unknown', isMcp: type === 'agent.mcp_tool_use' });
+      pendingToolUse.set(ev.id, {
+        ts: tsMillis,
+        name: ev.name || 'unknown',
+        isMcp: type === 'agent.mcp_tool_use',
+        input: ev.input ?? null,
+        mcpServer: ev.server_name ?? ev.mcp_server_name ?? null,
+      });
       continue;
     }
     if (type === 'agent.tool_result' || type === 'agent.mcp_tool_result') {
@@ -177,6 +210,8 @@ export async function* fetchSessionEntries({ apiKey, agentId, sessionId, model }
         duration_ms: (start?.ts && tsMillis) ? tsMillis - start.ts : null,
         status: isError ? 'error' : 'ok',
         error: isError ? extractText(ev.content).slice(0, 500) : null,
+        input: start?.input ?? null,
+        output: { content: ev.content ?? null, mcp_server: start?.mcpServer ?? undefined },
       };
       continue;
     }
@@ -188,6 +223,7 @@ export async function* fetchSessionEntries({ apiKey, agentId, sessionId, model }
         tool_name: ev.name || 'unknown',
         timestamp: ts,
         status: 'ok',
+        input: ev.input ?? null,
       };
       continue;
     }
