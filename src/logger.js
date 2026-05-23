@@ -59,8 +59,8 @@ export class Logger {
       output: e.output ?? null,
     };
     try {
-      await mkdir(join(this.logDir, this.agentId), { recursive: true });
-      await appendFile(path, JSON.stringify(full) + '\n', 'utf8');
+      await mkdir(join(this.logDir, this.agentId), { recursive: true, mode: 0o700 });
+      await appendFile(path, JSON.stringify(full) + '\n', { encoding: 'utf8', mode: 0o600 });
       this.count++;
     } catch (err) {
       if (!this.silent) process.stderr.write(`[wma] log error: ${err.message}\n`);

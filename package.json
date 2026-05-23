@@ -15,7 +15,12 @@
     "./adapters/langchain": "./src/adapters/langchain.js",
     "./adapters/generic": "./src/adapters/generic.js"
   },
-  "files": ["src/"],
+  "files": ["src/", "scripts/inspect.js"],
+  "bin": { "wma-inspect": "./scripts/inspect.js" },
+  "scripts": {
+    "inspect": "node scripts/inspect.js",
+    "example": "node examples/claude-agent/index.js"
+  },
   "engines": { "node": ">=18.0.0" },
   "dependencies": {},
   "devDependencies": {

@@ -12,18 +12,19 @@ export class Exporter {
     this.agentId = agentId;
     this.silent = silent;
     this.queue = [];
-    this.key = apiKey ? scryptSync(apiKey, SALT, 32) : null;
+    this.enabled = !!(apiKey && exportUrl);
+    this.key = this.enabled ? scryptSync(apiKey, SALT, 32) : null;
     this.timer = null;
     this.batchInterval = batchInterval;
   }
 
   start() {
-    if (this.timer || !this.exportUrl || !this.apiKey) return;
+    if (this.timer || !this.enabled) return;
     this.timer = setInterval(() => this.flush().catch(() => {}), this.batchInterval);
     if (this.timer.unref) this.timer.unref();
   }
   stop() { if (this.timer) { clearInterval(this.timer); this.timer = null; } }
-  enqueue(record) { this.queue.push(anonymize(record)); }
+  enqueue(record) { if (this.enabled) this.queue.push(anonymize(record)); }
 
   _encrypt(payload) {
     const iv = randomBytes(16);

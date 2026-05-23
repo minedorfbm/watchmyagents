@@ -102,6 +102,39 @@ Before any export, the SDK applies two passes:
 
 Batches are flushed every `batchInterval` ms (default 30s) using AES-256-GCM with a key derived via `scryptSync(apiKey, salt, 32)` and a random 16-byte IV per batch. Failed sends retry x3 with exponential backoff and remain in local logs on failure. HTTPS only, certificate verification enabled.
 
+## Local-only pilot mode
+
+For a first test on a live agent — no remote endpoint, no API key, all
+logs stay on disk:
+
+```js
+import WatchMyAgents from 'watchmyagents'
+
+const wma = new WatchMyAgents({ agentId: 'deep-research-pilot', silent: true })
+// no apiKey, no exportUrl → exporter stays disabled, nothing leaves the host
+// the in-memory queue is bypassed (no memory growth)
+
+// … run your agent for N hours …
+
+await wma.shutdown()  // writes the session_end entry
+```
+
+Logs land in `./watchmyagents-logs/{agent_id}/{YYYY-MM-DD}.ndjson` with
+file permissions `0600` (dir `0700`) so other users on the host can't
+read them.
+
+Inspect the run with the bundled CLI:
+
+```bash
+npx wma-inspect ./watchmyagents-logs
+# or, when developing in this repo:
+npm run inspect -- ./watchmyagents-logs
+```
+
+It prints total actions, status breakdown, token usage, estimated cost,
+top tools/models/actions, errors, slowest calls, and per-session summary
+read from `session_end` entries.
+
 ## Run the example
 
 ```bash
