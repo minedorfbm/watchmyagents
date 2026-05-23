@@ -135,6 +135,37 @@ It prints total actions, status breakdown, token usage, estimated cost,
 top tools/models/actions, errors, slowest calls, and per-session summary
 read from `session_end` entries.
 
+## Anthropic Managed Agents (post-hoc fetcher)
+
+For agents that run inside the Anthropic Console (`agent_xxx` IDs), WMA
+cannot wrap the runtime — the agent loop runs in Anthropic's cloud. The
+SDK ships a fetcher that pulls session events via the public REST API
+and writes them to the same NDJSON format as a local run.
+
+```bash
+# Pull all sessions of an agent over the last hour
+ANTHROPIC_API_KEY=sk-ant-... \
+  npx wma-fetch --agent-id agent_01XaNB4M88ZvcW8FoQ5GC14A --since 1h
+
+# Or a specific session by id
+npx wma-fetch --agent-id agent_xxx --session-id sess_xxx
+
+# Optional: also dump the raw Anthropic event stream alongside, for
+# debugging the mapper if something looks off:
+npx wma-fetch --agent-id agent_xxx --since 24h --dump-raw
+```
+
+Output lands in `./watchmyagents-logs/{agent_id}/{day}.ndjson` exactly
+like a wrapped local run, so `npx wma-inspect ./watchmyagents-logs`
+works the same way.
+
+**Mapping policy.** Token usage is attached to `llm_call` entries only
+(faithful to Anthropic's per-message `usage` payload). `tool_use` and
+`mcp_tool_use` carry name, duration, and error status but no tokens.
+Cost is left at `null` unless you provide a `tokenPricing` table — the
+SDK intentionally does not bundle prices because per-customer plans
+evolve.
+
 ## Run the example
 
 ```bash

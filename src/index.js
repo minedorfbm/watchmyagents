@@ -5,6 +5,7 @@ import { createOpenAIMonitor } from './adapters/openai.js';
 import { createLangChainHandler } from './adapters/langchain.js';
 import { anonymize, scrubString, hashId } from './anonymizer.js';
 import { DEFAULT_PRICING, estimateCost, TokenTracker } from './tokens.js';
+import * as anthropicManaged from './sources/anthropic-managed.js';
 
 export {
   WatchMyAgents,
@@ -19,6 +20,7 @@ export {
   DEFAULT_PRICING,
   estimateCost,
   TokenTracker,
+  anthropicManaged,
 };
 
 export default WatchMyAgents;

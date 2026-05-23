@@ -15,10 +15,14 @@
     "./adapters/langchain": "./src/adapters/langchain.js",
     "./adapters/generic": "./src/adapters/generic.js"
   },
-  "files": ["src/", "scripts/inspect.js"],
-  "bin": { "wma-inspect": "./scripts/inspect.js" },
+  "files": ["src/", "scripts/inspect.js", "scripts/fetch-anthropic.js"],
+  "bin": {
+    "wma-inspect": "./scripts/inspect.js",
+    "wma-fetch": "./scripts/fetch-anthropic.js"
+  },
   "scripts": {
     "inspect": "node scripts/inspect.js",
+    "fetch": "node scripts/fetch-anthropic.js",
     "example": "node examples/claude-agent/index.js"
   },
   "engines": { "node": ">=18.0.0" },

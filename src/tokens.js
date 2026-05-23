@@ -1,16 +1,8 @@
-// Built-in pricing table ($ per 1M tokens). Override via WatchMyAgents({ tokenPricing }).
-export const DEFAULT_PRICING = {
-  'claude-3-5-sonnet-20241022': { input: 3,    output: 15,   cache_read: 0.30, cache_write: 3.75 },
-  'claude-3-5-sonnet-latest':   { input: 3,    output: 15,   cache_read: 0.30, cache_write: 3.75 },
-  'claude-3-5-haiku-20241022':  { input: 0.80, output: 4,    cache_read: 0.08, cache_write: 1 },
-  'claude-3-opus-20240229':     { input: 15,   output: 75,   cache_read: 1.50, cache_write: 18.75 },
-  'claude-3-sonnet-20240229':   { input: 3,    output: 15 },
-  'claude-3-haiku-20240307':    { input: 0.25, output: 1.25 },
-  'gpt-4o':                     { input: 2.50, output: 10 },
-  'gpt-4o-mini':                { input: 0.15, output: 0.60 },
-  'gpt-4-turbo':                { input: 10,   output: 30 },
-  'gpt-3.5-turbo':              { input: 0.50, output: 1.50 },
-};
+// Pricing is intentionally NOT bundled in the SDK: per-customer plans evolve.
+// Supply your own table via WatchMyAgents({ tokenPricing: { 'model-id': { input, output, cache_read, cache_write } } })
+// to get cost_usd populated on entries; otherwise cost stays null and only
+// token counts (split + by-model) are tracked.
+export const DEFAULT_PRICING = {};
 
 export function estimateCost(model, t, pricing) {
   if (!model) return null;
