@@ -1,7 +1,7 @@
 {
   "name": "watchmyagents",
   "version": "0.1.0",
-  "description": "Universal log collector for AI agents — Cybersecurity for AI Agents",
+  "description": "Security observability for AI agents — local-first NDJSON capture of every agent action (tool calls, prompts, state transitions, errors). Built for security audits, not just token counting.",
   "type": "module",
   "main": "./src/index.cjs",
   "module": "./src/index.js",
@@ -15,7 +15,14 @@
     "./adapters/langchain": "./src/adapters/langchain.js",
     "./adapters/generic": "./src/adapters/generic.js"
   },
-  "files": ["src/", "scripts/inspect.js", "scripts/fetch-anthropic.js"],
+  "files": [
+    "src/",
+    "scripts/inspect.js",
+    "scripts/fetch-anthropic.js",
+    "README.md",
+    "SECURITY.md",
+    "LICENSE"
+  ],
   "bin": {
     "wma-inspect": "./scripts/inspect.js",
     "wma-fetch": "./scripts/fetch-anthropic.js"
@@ -30,6 +37,28 @@
   "devDependencies": {
     "@anthropic-ai/sdk": "latest"
   },
-  "keywords": ["ai", "agents", "monitoring", "logging", "security", "observability", "cybersecurity"],
-  "license": "MIT"
+  "keywords": [
+    "ai",
+    "agents",
+    "monitoring",
+    "logging",
+    "security",
+    "observability",
+    "cybersecurity",
+    "anthropic",
+    "claude",
+    "managed-agents",
+    "audit",
+    "ndjson"
+  ],
+  "author": "MinedorFBM",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/minedorfbm/watchmyagents.git"
+  },
+  "homepage": "https://github.com/minedorfbm/watchmyagents#readme",
+  "bugs": {
+    "url": "https://github.com/minedorfbm/watchmyagents/issues"
+  }
 }

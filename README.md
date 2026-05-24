@@ -1,179 +1,183 @@
-# watchmyagents
+# Watch My Agents
 
-**Cybersecurity for AI Agents.** A universal, zero-dependency JavaScript SDK to collect, anonymize, store locally, and securely export the logs of any AI agent (Claude, OpenAI, LangChain, custom).
+**Security observability for AI agents.** A zero-dependency CLI + SDK that captures every action your AI agents take — tool calls, prompts, state transitions, errors, multi-agent comms — into local NDJSON logs. Built for security audits, not just token counting.
 
-- Zero external dependencies (only Node.js 18+ built-ins: `fs/promises`, `crypto`, `https`, `path`, `os`)
-- Dual ESM + CJS exports
-- Local NDJSON log storage with daily rotation
-- Two-pass anonymization (PII regex + SHA-256 hashing of identifiers)
-- AES-256-GCM encrypted batch export over HTTPS, with retry & local fallback
-- Silent by default — no console output in production
+Designed around three guarantees:
+
+1. **Local-first.** Raw payloads (prompts, outputs, tool arguments) stay 100% on your machine. Nothing leaves unless you explicitly opt in.
+2. **Trace everything, not just what costs tokens.** A `web_fetch` to a suspicious URL carries zero tokens but is exactly what a security audit needs to see.
+3. **Zero dependencies.** Only Node.js 18+ built-ins. No telemetry, no phone-home, no hidden network calls.
+
+---
 
 ## Install
 
 ```bash
-npm install watchmyagents
+npm install -g watchmyagents
 ```
 
-## Quick start
+## Quickstart — monitor an Anthropic Managed Agent
 
-```js
-import WatchMyAgents, { watch } from 'watchmyagents'
-
-const wma = new WatchMyAgents({
-  apiKey: 'wma_xxx',
-  agentId: 'my-agent',
-  logDir: './watchmyagents-logs',
-  exportUrl: 'https://ingest.watchmyagents.io/v1/logs',
-  silent: true,
-  batchInterval: 30000,
-})
-
-const result = await watch('search_web', { query: 'hello' }, async () => {
-  return await myAgent.search('hello')
-})
-```
-
-## Claude adapter
-
-```js
-import Anthropic from '@anthropic-ai/sdk'
-import { createClaudeMonitor } from 'watchmyagents/adapters/claude'
-
-const monitor = createClaudeMonitor({ apiKey: 'wma_xxx', agentId: 'claude-agent' })
-const claude = monitor.wrap(new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY }))
-
-await claude.messages.create({ model: 'claude-3-5-sonnet-20241022', /* ... */ })
-```
-
-## What is logged
-
-Each NDJSON entry contains:
-
-```
-id, agent_id, framework, timestamp, action_type, tool_name,
-model, duration_ms,
-tokens_used, input_tokens, output_tokens,
-cache_read_tokens, cache_creation_tokens, cost_usd,
-status, error, sequence_number, session_id, input, output
-```
-
-`input` and `output` are written **only to local logs**. They are **never** included in the encrypted export — only metadata is sent.
-
-## Token & cost monitoring
-
-Per-action token usage is split into `input_tokens`, `output_tokens`,
-`cache_read_tokens`, `cache_creation_tokens` and `tokens_used` (total). When
-the model is known (Claude 3.5 / 3 / Haiku / Opus, GPT-4o / 4-turbo / 3.5),
-`cost_usd` is estimated from a built-in pricing table. Override pricing via:
-
-```js
-new WatchMyAgents({
-  tokenPricing: {
-    'my-model': { input: 1.0, output: 4.0, cache_read: 0.1, cache_write: 1.25 },
-  },
-})
-```
-
-Get aggregated stats at any time:
-
-```js
-wma.tokenStats()
-// {
-//   total: { input, output, cache_read, cache_creation, sum, cost_usd },
-//   by_tool:   { 'get_weather':       { ..., calls: 2 } },
-//   by_action: { 'llm_call':          { ..., calls: 3 } },
-//   by_model:  { 'claude-3-5-sonnet-...': { ..., calls: 2 } },
-// }
-```
-
-The Claude, OpenAI and LangChain adapters auto-populate token splits from
-each provider's `usage` payload. For custom agents, pass them via the
-`watch()` `meta` argument or `logAction()`.
-
-## Anonymization
-
-Before any export, the SDK applies two passes:
-
-1. **PII regex scrubbing** — `[EMAIL]`, `[TOKEN]`, `[API_KEY]`, `[CARD]`, `[PHONE]`, `[URL]`, `[IP]`
-2. **SHA-256 hashing** of `user_id`, `session_id`, `agent_id` (irreversible, consistent for correlation)
-
-## Encrypted export
-
-Batches are flushed every `batchInterval` ms (default 30s) using AES-256-GCM with a key derived via `scryptSync(apiKey, salt, 32)` and a random 16-byte IV per batch. Failed sends retry x3 with exponential backoff and remain in local logs on failure. HTTPS only, certificate verification enabled.
-
-## Local-only pilot mode
-
-For a first test on a live agent — no remote endpoint, no API key, all
-logs stay on disk:
-
-```js
-import WatchMyAgents from 'watchmyagents'
-
-const wma = new WatchMyAgents({ agentId: 'deep-research-pilot', silent: true })
-// no apiKey, no exportUrl → exporter stays disabled, nothing leaves the host
-// the in-memory queue is bypassed (no memory growth)
-
-// … run your agent for N hours …
-
-await wma.shutdown()  // writes the session_end entry
-```
-
-Logs land in `./watchmyagents-logs/{agent_id}/{YYYY-MM-DD}.ndjson` with
-file permissions `0600` (dir `0700`) so other users on the host can't
-read them.
-
-Inspect the run with the bundled CLI:
+You'll need:
+- An Anthropic API key (`sk-ant-…`)
+- The `agent_id` of the agent you want to monitor (from [console.anthropic.com](https://console.anthropic.com))
 
 ```bash
-npx wma-inspect ./watchmyagents-logs
-# or, when developing in this repo:
-npm run inspect -- ./watchmyagents-logs
+export ANTHROPIC_API_KEY="sk-ant-..."
+
+wma-fetch --agent-id agent_01XaN... --since 1h
+wma-inspect
 ```
 
-It prints total actions, status breakdown, token usage, estimated cost,
-top tools/models/actions, errors, slowest calls, and per-session summary
-read from `session_end` entries.
+That's it. You'll see a security-focused summary of everything the agent did:
 
-## Anthropic Managed Agents (post-hoc fetcher)
+```
+━━━ WatchMyAgents log inspector ━━━
+entries          : 90
+sessions         : 2 (session_end entries: 2)
+model            : claude-sonnet-4-6
+window           : 2026-05-23T05:32:08Z → 2026-05-23T06:12:40Z
+status           : ok=90  error=0
 
-For agents that run inside the Anthropic Console (`agent_xxx` IDs), WMA
-cannot wrap the runtime — the agent loop runs in Anthropic's cloud. The
-SDK ships a fetcher that pulls session events via the public REST API
-and writes them to the same NDJSON format as a local run.
+── Tokens ──
+total            : 811,798  (in=26 out=22,996 cache_r=492,220 cache_w=296,556)
+
+── By tool ──
+  web_search                               calls=  20  tokens=       0
+  web_fetch                                calls=   2  tokens=       0
+
+── By action_type ──
+  llm_call                                 calls=  12  tokens=  811798
+  state_transition                         calls=  28
+  user_message                             calls=   7
+  thinking                                 calls=   9
+  message                                  calls=  10
+  tool_use                                 calls=  22
+
+── Top destinations (tool inputs) ──
+    1×  web_search       "AI agent security attack vectors prompt injection..."
+    1×  web_fetch        https://genai.owasp.org/2025/12/09/owasp-genai-...
+
+── Action sequences (top transitions) ──
+   19×  22.1%  state_transition → state_transition
+   17×  19.8%  tool_use → tool_use
+   ...
+
+── Tool latency ──
+  web_search           n= 20  p50=3,744 ms  p95=4,009 ms  max=4,009 ms
+  web_fetch            n=  2  p50=1,477 ms  p95=1,477 ms
+
+── Rate metrics ──
+  tokens/min       : 721
+  calls/min        : 0.08
+```
+
+## What gets logged
+
+Each line of the NDJSON file is one agent action. The 18 `action_type` values captured today:
+
+| `action_type` | When emitted |
+|---|---|
+| `user_message` | A prompt is sent to the agent |
+| `user_interrupt` | Manual mid-execution stop |
+| `tool_confirmation` | Approve / deny a tool call gated by a permission policy |
+| `custom_tool_result` | Orchestrator returns a custom tool result |
+| `message` | Agent text response |
+| `thinking` | Agent reasoning block |
+| `llm_call` | Model inference call (with token usage) |
+| `tool_use` | Pre-built agent tool invoked (web_search, web_fetch, bash, …) |
+| `mcp_tool_use` | MCP server tool invoked |
+| `custom_tool_use` | Custom tool defined by the orchestrator |
+| `context_compacted` | Context window saturated — history compacted |
+| `thread_created` | A multi-agent thread was created |
+| `thread_message_sent` / `_received` | Inter-agent communication in multi-agent sessions |
+| `config_change` | Session config (system prompt, tools, …) was updated mid-flight ⚠️ |
+| `state_transition` | Session/thread `running`/`idle`/`rescheduled`/`terminated` |
+| `session_error` | Error during session processing |
+| `session_end` | Synthetic marker at end of each fetch (tokens summary) |
+
+Each entry carries: `id`, `agent_id`, `framework`, `timestamp`, `action_type`, `tool_name`, `model`, `duration_ms`, `tokens_used`, `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_creation_tokens`, `status`, `error`, `sequence_number`, `session_id`, `input`, `output`.
+
+**The `input` and `output` fields contain the raw payload** (tool arguments, agent responses, queries). They never leave your machine.
+
+## CLI reference
+
+### `wma-fetch` — pull events from Anthropic Managed Agents
 
 ```bash
-# Pull all sessions of an agent over the last hour
-ANTHROPIC_API_KEY=sk-ant-... \
-  npx wma-fetch --agent-id agent_01XaNB4M88ZvcW8FoQ5GC14A --since 1h
-
-# Or a specific session by id
-npx wma-fetch --agent-id agent_xxx --session-id sess_xxx
-
-# Optional: also dump the raw Anthropic event stream alongside, for
-# debugging the mapper if something looks off:
-npx wma-fetch --agent-id agent_xxx --since 24h --dump-raw
+wma-fetch --agent-id <agent_id> [--session-id <sess_id>] [--since 1h]
+         [--log-dir ./watchmyagents-logs] [--dump-raw]
 ```
 
-Output lands in `./watchmyagents-logs/{agent_id}/{day}.ndjson` exactly
-like a wrapped local run, so `npx wma-inspect ./watchmyagents-logs`
-works the same way.
+| Flag | Effect |
+|---|---|
+| `--agent-id agent_xxx` | Required — Anthropic agent identifier |
+| `--since 1h` / `24h` / `7d` | Fetch window (default: all) |
+| `--session-id sesn_xxx` | Limit to a single session |
+| `--log-dir ./logs` | Where to write NDJSON (default `./watchmyagents-logs`) |
+| `--dump-raw` | Also save raw API events alongside (forensic / debugging) |
+| `--api-key sk-ant-…` | Override the `ANTHROPIC_API_KEY` env var |
 
-**Mapping policy.** Token usage is attached to `llm_call` entries only
-(faithful to Anthropic's per-message `usage` payload). `tool_use` and
-`mcp_tool_use` carry name, duration, and error status but no tokens.
-Cost is left at `null` unless you provide a `tokenPricing` table — the
-SDK intentionally does not bundle prices because per-customer plans
-evolve.
+Logs land in `./watchmyagents-logs/<agent_id>/<date>.ndjson` (file mode `0600`, dir `0700`).
 
-## Run the example
+### `wma-inspect` — audit the logs
 
 ```bash
-cp .env.example .env  # add ANTHROPIC_API_KEY
-npm install
-node examples/claude-agent/index.js
+wma-inspect [path]
 ```
+
+`path` can be a single `.ndjson` file or a directory (default: `./watchmyagents-logs`).
+
+Outputs sections aligned with security audit needs: tokens summary, by-tool / by-action-type breakdowns, top tool destinations (URLs / queries), action-sequence transitions, tool error rates, p50/p95/max latency per tool, rate metrics.
+
+## Automating (cron)
+
+For continuous monitoring, run `wma-fetch` on a cron:
+
+```cron
+# Every 15 minutes
+*/15 * * * * cd /path/to/project && wma-fetch --agent-id agent_01XaN... --since 20m
+```
+
+Or for daily reports:
+
+```cron
+# Once per night, fetch the full last 24h
+5 0 * * * cd /path/to/project && wma-fetch --agent-id agent_01XaN... --since 25h
+```
+
+## Data sovereignty model
+
+WatchMyAgents is built so that **your prompts and outputs never have to leave your machine**:
+
+| Where | What lives there |
+|---|---|
+| **Your machine** (`./watchmyagents-logs/`) | Full NDJSON with all prompts, tool inputs, agent outputs. `chmod 600` on every file. |
+| **Anthropic API** | Where the agent runs. WMA pulls events via the public REST API only. |
+| **WMA infrastructure** | **Nothing today.** Future opt-in telemetry will ship only anonymized metadata (counts, timings, hashes) — never raw payloads. |
+
+This is the "local-first" guarantee. It is the product, not a marketing claim.
+
+## Security
+
+WMA requires your Anthropic API key to call the Managed Agents REST API on your behalf. The key:
+
+- Is read from the `ANTHROPIC_API_KEY` env var or the `--api-key` flag
+- Is **never** written to disk, **never** logged, **never** transmitted anywhere except `api.anthropic.com` over HTTPS
+- Is only ever held in process memory for the duration of a `wma-fetch` run
+
+For added safety, generate a **workspace-scoped** API key with read-only permissions on the agents you want to monitor: [console.anthropic.com → API Keys](https://console.anthropic.com/settings/keys).
+
+Report vulnerabilities via [SECURITY.md](./SECURITY.md).
+
+## Status
+
+- ✅ Anthropic Managed Agents (post-hoc fetch + audit)
+- 🚧 Encrypted upload to customer's own cloud (S3/GCS/Azure with `age` public-key encryption)
+- 🚧 Anonymized telemetry to WMA cloud (opt-in, freemium model)
+- 🚧 Shield product — real-time policy gating via `user.tool_confirmation` + `user.interrupt`
+- 🚧 Adapters for in-process agents (Claude SDK, OpenAI, LangChain, generic) — code present in `src/adapters/` but unverified against the new Modèle C architecture; documentation will follow once re-validated
 
 ## License
 
-MIT
+[MIT](./LICENSE)
