@@ -24,15 +24,17 @@
     "LICENSE"
   ],
   "bin": {
-    "wma-inspect": "./scripts/inspect.js",
-    "wma-fetch": "./scripts/fetch-anthropic.js"
+    "wma-inspect": "scripts/inspect.js",
+    "wma-fetch": "scripts/fetch-anthropic.js"
   },
   "scripts": {
     "inspect": "node scripts/inspect.js",
     "fetch": "node scripts/fetch-anthropic.js",
     "example": "node examples/claude-agent/index.js"
   },
-  "engines": { "node": ">=18.0.0" },
+  "engines": {
+    "node": ">=18.0.0"
+  },
   "dependencies": {},
   "devDependencies": {
     "@anthropic-ai/sdk": "latest"
