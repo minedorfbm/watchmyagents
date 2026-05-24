@@ -4,6 +4,9 @@ watchmyagents-logs/
 *.log
 .DS_Store
 
-# Internal / strategy docs — never committed to public repo
+# Internal / strategy / private config — never committed to public repo
 *.internal.md
+*.internal.json
+*.internal.yaml
+*.internal.yml
 docs/internal/

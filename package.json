@@ -1,6 +1,6 @@
 {
   "name": "watchmyagents",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Security observability for AI agents — local-first NDJSON capture of every agent action (tool calls, prompts, state transitions, errors). Built for security audits, not just token counting.",
   "type": "module",
   "main": "./src/index.cjs",
@@ -19,17 +19,20 @@
     "src/",
     "scripts/inspect.js",
     "scripts/fetch-anthropic.js",
+    "scripts/shield.js",
     "README.md",
     "SECURITY.md",
     "LICENSE"
   ],
   "bin": {
     "wma-inspect": "scripts/inspect.js",
-    "wma-fetch": "scripts/fetch-anthropic.js"
+    "wma-fetch": "scripts/fetch-anthropic.js",
+    "wma-shield": "scripts/shield.js"
   },
   "scripts": {
     "inspect": "node scripts/inspect.js",
     "fetch": "node scripts/fetch-anthropic.js",
+    "shield": "node scripts/shield.js",
     "example": "node examples/claude-agent/index.js"
   },
   "engines": {

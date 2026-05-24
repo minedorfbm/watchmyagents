@@ -170,12 +170,35 @@ For added safety, generate a **workspace-scoped** API key with read-only permiss
 
 Report vulnerabilities via [SECURITY.md](./SECURITY.md).
 
+## Shield — real-time policy enforcement
+
+`wma-shield` (shipped in v0.2.0) is the real-time enforcement companion to Watch. It streams agent events live, evaluates them against a local JSON policy file, and blocks tool calls that violate the policy via `user.tool_confirmation` (when the agent has `permission_policy: always_ask` configured) or `user.interrupt` (zero-setup fallback).
+
+```bash
+# Agent-wide mode — attaches to ALL active sessions of the agent automatically.
+# Run under a process supervisor (systemd, pm2, docker) for production.
+wma-shield --agent-id agent_xxx --policy ./policies.json
+```
+
+Shield auto-detects the best enforcement mode at startup:
+- **tool_confirmation** (precise, pre-execution blocking) when at least one tool has `permission_policy: always_ask`
+- **interrupt** (degraded, post-execution termination) otherwise
+
+For the precise mode setup instructions:
+```bash
+wma-shield --setup-guide --agent-id agent_xxx
+```
+
+Decisions are logged to the same NDJSON stream as Watch (`action_type: shield_decision`), so `wma-inspect` surfaces them in its audit summaries.
+
 ## Status
 
-- ✅ Anthropic Managed Agents (post-hoc fetch + audit)
+- ✅ Watch SDK — Anthropic Managed Agents post-hoc fetch + local audit
+- ✅ Shield SDK — real-time enforcement (interrupt mode + tool_confirmation mode)
 - 🚧 Encrypted upload to customer's own cloud (S3/GCS/Azure with `age` public-key encryption)
 - 🚧 Anonymized telemetry to WMA cloud (opt-in, freemium model)
-- 🚧 Shield product — real-time policy gating via `user.tool_confirmation` + `user.interrupt`
+- 🚧 Guardian AI (cloud) — automatic policy suggestions from observed behavior
+- 🚧 Fortress (cloud) — dashboard + human-in-the-loop validation queue
 - 🚧 Adapters for in-process agents (Claude SDK, OpenAI, LangChain, generic) — code present in `src/adapters/` but unverified against the new Modèle C architecture; documentation will follow once re-validated
 
 ## License
