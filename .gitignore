@@ -3,3 +3,7 @@ node_modules/
 watchmyagents-logs/
 *.log
 .DS_Store
+
+# Internal / strategy docs — never committed to public repo
+*.internal.md
+docs/internal/
