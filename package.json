@@ -51,7 +51,7 @@
     "audit",
     "ndjson"
   ],
-  "author": "MinedorFBM",
+  "author": "MinedorFBM <minedor@watchmyagents.com>",
   "license": "MIT",
   "repository": {
     "type": "git",

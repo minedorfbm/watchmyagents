@@ -63,7 +63,7 @@ WMA is built to give visibility into your AI agent's behavior. It is **observati
 
 If you discover a security issue, **please do NOT open a public GitHub issue.**
 
-Email: [arma@talkytranslate.com](mailto:arma@talkytranslate.com)
+Email: [minedor@watchmyagents.com](mailto:minedor@watchmyagents.com)
 
 Include:
 - A description of the issue and its impact
