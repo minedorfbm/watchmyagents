@@ -118,6 +118,9 @@ async function runSessionWorker({ sessionId, ctx }) {
   sinfo(sessionId, `attached (${mode} mode)`);
 
   let processed = 0, enforced = 0, sessionInterrupted = false;
+  // Cache is only needed for tool_confirmation mode (lookup by event_id when
+  // requires_action fires). Interrupt mode evaluates synchronously and never
+  // reads the cache, so caching there would just leak memory on long sessions.
   const toolUseCache = new Map();
 
   try {
@@ -131,7 +134,7 @@ async function runSessionWorker({ sessionId, ctx }) {
 
       // ── INTERRUPT MODE ──────────────────────────────────────────────
       if (mode === 'interrupt' && CACHEABLE_TOOL_TYPES.has(rawEvent.type)) {
-        toolUseCache.set(rawEvent.id, rawEvent);
+        // No caching in interrupt mode — react synchronously, free memory.
         const normalized = normalizeForPolicy(rawEvent);
         const t0 = Date.now();
         const result = evaluate(normalized, ruleset);

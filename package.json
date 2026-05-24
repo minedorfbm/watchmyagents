@@ -1,20 +1,8 @@
 {
   "name": "watchmyagents",
-  "version": "0.2.0",
-  "description": "Security observability for AI agents — local-first NDJSON capture of every agent action (tool calls, prompts, state transitions, errors). Built for security audits, not just token counting.",
+  "version": "0.3.0",
+  "description": "Security observability + real-time policy enforcement for AI agents — local-first NDJSON capture of every agent action (tool calls, prompts, state transitions, errors) plus the Shield CLI that blocks policy violations live on Anthropic Managed Agents.",
   "type": "module",
-  "main": "./src/index.cjs",
-  "module": "./src/index.js",
-  "exports": {
-    ".": {
-      "import": "./src/index.js",
-      "require": "./src/index.cjs"
-    },
-    "./adapters/claude": "./src/adapters/claude.js",
-    "./adapters/openai": "./src/adapters/openai.js",
-    "./adapters/langchain": "./src/adapters/langchain.js",
-    "./adapters/generic": "./src/adapters/generic.js"
-  },
   "files": [
     "src/",
     "scripts/inspect.js",
@@ -32,15 +20,14 @@
   "scripts": {
     "inspect": "node scripts/inspect.js",
     "fetch": "node scripts/fetch-anthropic.js",
-    "shield": "node scripts/shield.js",
-    "example": "node examples/claude-agent/index.js"
+    "shield": "node scripts/shield.js"
   },
   "engines": {
     "node": ">=18.0.0"
   },
   "dependencies": {},
   "devDependencies": {
-    "@anthropic-ai/sdk": "latest"
+    "@anthropic-ai/sdk": "^0.42.0"
   },
   "keywords": [
     "ai",
@@ -54,7 +41,9 @@
     "claude",
     "managed-agents",
     "audit",
-    "ndjson"
+    "ndjson",
+    "policy-enforcement",
+    "shield"
   ],
   "author": "MinedorFBM <minedor@watchmyagents.com>",
   "license": "MIT",
