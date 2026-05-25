@@ -57,6 +57,16 @@ async function main() {
   if (!apiKey) die('error: --api-key or ANTHROPIC_API_KEY required');
   if (!agentId) die('error: --agent-id required (e.g. agent_01XaNB4M88ZvcW8FoQ5GC14A)');
 
+  // Security: --api-key on the command line ends up in shell history and is
+  // visible to other processes via /proc/<pid>/cmdline. Strongly prefer the
+  // ANTHROPIC_API_KEY environment variable.
+  if (args['api-key']) {
+    process.stderr.write(
+      '[wma-fetch] warning: --api-key on the command line is visible in shell history and\n' +
+      '            in the process list. Prefer: export ANTHROPIC_API_KEY=...\n'
+    );
+  }
+
   process.stdout.write(`[wma-fetch] resolving agent ${agentId}…\n`);
   const agent = await getAgent(apiKey, agentId).catch(e => die(`failed to GET agent: ${e.message}`));
   const rawModel = agent.model || agent.config?.model || null;

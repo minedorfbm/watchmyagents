@@ -37,19 +37,25 @@ WMA needs your Anthropic API key to call the Managed Agents REST API on your beh
 
 ## Threat model
 
-WMA is built to give visibility into your AI agent's behavior. It is **observational**, not preventive.
+WMA combines **two complementary layers**:
+- **Watch** (`wma-fetch`, `wma-inspect`) — observational. Captures every agent action into local NDJSON for after-the-fact audit.
+- **Shield** (`wma-shield`, shipped in v0.2.0) — preventive. Streams agent events in real time and enforces policies via `user.tool_confirmation` (block before execution when the agent has `permission_policy: always_ask`) or `user.interrupt` (terminate after a violating tool ran, when always_ask is not configured).
 
 ### What WMA defends against
 
-- **Blind spots in agent behavior.** Tool calls, prompts, state transitions, errors are all captured for after-the-fact analysis.
+- **Blind spots in agent behavior.** Watch captures tool calls, prompts, state transitions, and errors for after-the-fact analysis.
 - **Token-only observability tools.** WMA captures every action including zero-token ones (`tool_use`, `state_transition`, etc.) that are the most security-relevant.
+- **Inline policy violations** (Shield). When the agent has `permission_policy: always_ask` configured, Shield blocks tool calls before execution. When not, Shield interrupts the session on first violation (the offending tool already ran, but the agent loop stops).
 - **Vendor lock-in.** NDJSON is portable; you own the data.
 
 ### What WMA does NOT defend against
 
-- **Real-time attack prevention.** WMA observes after events occur. For inline policy gating, see the upcoming Shield product.
 - **A compromised host.** If an attacker has read access to your user account, they can read the log files. Consider encryption at rest (filesystem-level, or future opt-in via `age`) for sensitive environments.
 - **Tampering with local logs.** Files are append-only by convention, not enforced. A future release will add a per-line hash chain for tamper-evident audit.
+- **Shield being killed.** Shield is an external process. If killed, the agent runs without enforcement until Shield restarts. Run under a process supervisor (systemd, pm2, docker `restart: always`) in production.
+- **Pre-installation activity.** Shield only enforces from the moment it attaches forward. Past events are not retroactively replayed or re-evaluated.
+- **A malicious policy file.** Shield's policy engine refuses obviously unsafe regex patterns (e.g. catastrophic backtracking) and truncates inputs before regex tests to mitigate ReDoS. But a user-controlled policy file remains a code-adjacent input — treat it as you would treat sourcecode.
+- **A compromised Anthropic API.** WMA trusts the events delivered by Anthropic. This is out of scope.
 - **A compromised Anthropic API.** WMA trusts the events delivered by Anthropic. This is out of scope.
 
 ## Supply chain

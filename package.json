@@ -1,13 +1,14 @@
 {
   "name": "watchmyagents",
-  "version": "0.3.0",
-  "description": "Security observability + real-time policy enforcement for AI agents — local-first NDJSON capture of every agent action (tool calls, prompts, state transitions, errors) plus the Shield CLI that blocks policy violations live on Anthropic Managed Agents.",
+  "version": "0.4.0",
+  "description": "Security observability + real-time policy enforcement for AI agents — local-first NDJSON capture, Shield CLI that blocks policy violations live on Anthropic Managed Agents, and an anonymizer to produce signals-only payloads safe to ship to a cloud control plane.",
   "type": "module",
   "files": [
     "src/",
     "scripts/inspect.js",
     "scripts/fetch-anthropic.js",
     "scripts/shield.js",
+    "scripts/anonymize.js",
     "README.md",
     "SECURITY.md",
     "LICENSE"
@@ -15,12 +16,14 @@
   "bin": {
     "wma-inspect": "scripts/inspect.js",
     "wma-fetch": "scripts/fetch-anthropic.js",
-    "wma-shield": "scripts/shield.js"
+    "wma-shield": "scripts/shield.js",
+    "wma-anonymize": "scripts/anonymize.js"
   },
   "scripts": {
     "inspect": "node scripts/inspect.js",
     "fetch": "node scripts/fetch-anthropic.js",
-    "shield": "node scripts/shield.js"
+    "shield": "node scripts/shield.js",
+    "anonymize": "node scripts/anonymize.js"
   },
   "engines": {
     "node": ">=18.0.0"

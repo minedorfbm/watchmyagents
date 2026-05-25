@@ -42,18 +42,61 @@ export async function loadPolicies(path) {
   return data;
 }
 
+// ReDoS protection: regexes are loaded from a user-provided JSON policy file,
+// so a malicious or buggy pattern (e.g. `(a+)+$`) could pin the CPU on a long
+// input. We mitigate two ways:
+//   1) Cap the maximum input length passed to any regex test to MAX_REGEX_INPUT
+//      bytes. Above that we truncate before testing. Real agent values
+//      (URLs, commands, queries) are well under this in practice.
+//   2) Reject obviously dangerous patterns at compile time (heuristic).
+//
+// A future v0.5 may add a proper safe-regex-2 dependency for thorough analysis.
+const MAX_REGEX_INPUT = 8192;
+
+const SUSPICIOUS_REGEX_PATTERNS = [
+  /(\([^)]*[+*][^)]*\))[+*]/,   // (x+)+ or (x*)* — classic catastrophic backtracking
+  /(\.\*){3,}/,                  // multiple .* in a row
+];
+
+function validateRegexString(src, where) {
+  if (typeof src !== 'string') {
+    throw new Error(`policy ${where}: regex must be a string`);
+  }
+  if (src.length > 2000) {
+    throw new Error(`policy ${where}: regex too long (>2000 chars)`);
+  }
+  for (const sus of SUSPICIOUS_REGEX_PATTERNS) {
+    if (sus.test(src)) {
+      throw new Error(`policy ${where}: regex looks vulnerable to catastrophic backtracking ("${src.slice(0, 60)}…"). Refusing to load.`);
+    }
+  }
+  return new RegExp(src);
+}
+
 function compileMatchRegexes(match) {
-  for (const condition of Object.values(match)) {
+  for (const [field, condition] of Object.entries(match)) {
     if (condition && typeof condition === 'object') {
-      if (condition.regex) condition._regex = new RegExp(condition.regex);
-      if (condition.not_regex) condition._not_regex = new RegExp(condition.not_regex);
-      if (condition.regex_any) condition._regex_any = condition.regex_any.map(r => new RegExp(r));
+      if (condition.regex) condition._regex = validateRegexString(condition.regex, `${field}.regex`);
+      if (condition.not_regex) condition._not_regex = validateRegexString(condition.not_regex, `${field}.not_regex`);
+      if (condition.regex_any) {
+        condition._regex_any = condition.regex_any.map((r, i) =>
+          validateRegexString(r, `${field}.regex_any[${i}]`));
+      }
     }
   }
 }
 
 function getNested(obj, path) {
   return path.split('.').reduce((o, k) => (o == null ? undefined : o[k]), obj);
+}
+
+// Truncate input before passing to regex test — guards against ReDoS on
+// pathologically long values (e.g. an agent that pastes a 5MB string into
+// a tool argument).
+function safeRegexTest(re, value) {
+  if (typeof value !== 'string') return false;
+  const s = value.length > MAX_REGEX_INPUT ? value.slice(0, MAX_REGEX_INPUT) : value;
+  return re.test(s);
 }
 
 function matchValue(value, condition) {
@@ -67,13 +110,13 @@ function matchValue(value, condition) {
   if (condition.in !== undefined) return condition.in.includes(value);
   if (condition.not_in !== undefined) return !condition.not_in.includes(value);
   if (condition._regex !== undefined) {
-    return typeof value === 'string' && condition._regex.test(value);
+    return safeRegexTest(condition._regex, value);
   }
   if (condition._not_regex !== undefined) {
-    return typeof value === 'string' && !condition._not_regex.test(value);
+    return typeof value === 'string' && !safeRegexTest(condition._not_regex, value);
   }
   if (condition._regex_any !== undefined) {
-    return typeof value === 'string' && condition._regex_any.some(r => r.test(value));
+    return condition._regex_any.some(r => safeRegexTest(r, value));
   }
   // Unknown condition shape — defensive: fail-closed (no match) so unknown
   // conditions never silently allow events.

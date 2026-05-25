@@ -121,7 +121,31 @@ async function runSessionWorker({ sessionId, ctx }) {
   // Cache is only needed for tool_confirmation mode (lookup by event_id when
   // requires_action fires). Interrupt mode evaluates synchronously and never
   // reads the cache, so caching there would just leak memory on long sessions.
-  const toolUseCache = new Map();
+  //
+  // Bounded cache: any tool_use whose policy is "always_allow" never appears
+  // in requires_action, so without these limits the Map would grow forever
+  // on long-running sessions. Two limits enforced:
+  //   - Maximum 1000 entries (LRU eviction)
+  //   - TTL 5 minutes (any entry not consumed by requires_action gets dropped)
+  const TOOLUSE_CACHE_MAX = 1000;
+  const TOOLUSE_CACHE_TTL_MS = 5 * 60 * 1000;
+  const toolUseCache = new Map(); // event_id → { event, cachedAt }
+
+  function cacheToolUse(event) {
+    const now = Date.now();
+    // TTL sweep: only walk if cache is non-trivial in size (cheap noop otherwise)
+    if (toolUseCache.size > 16) {
+      for (const [k, v] of toolUseCache) {
+        if (now - v.cachedAt > TOOLUSE_CACHE_TTL_MS) toolUseCache.delete(k);
+      }
+    }
+    // LRU cap: drop oldest insertion if over the size limit
+    while (toolUseCache.size >= TOOLUSE_CACHE_MAX) {
+      const oldest = toolUseCache.keys().next().value;
+      toolUseCache.delete(oldest);
+    }
+    toolUseCache.set(event.id, { event, cachedAt: now });
+  }
 
   try {
     for await (const rawEvent of streamWithReconnect({
@@ -166,7 +190,7 @@ async function runSessionWorker({ sessionId, ctx }) {
 
       // ── TOOL_CONFIRMATION MODE ──────────────────────────────────────
       if (mode === 'tool_confirmation' && CACHEABLE_TOOL_TYPES.has(rawEvent.type)) {
-        toolUseCache.set(rawEvent.id, rawEvent);
+        cacheToolUse(rawEvent);
         continue;
       }
 
@@ -176,7 +200,8 @@ async function runSessionWorker({ sessionId, ctx }) {
           && Array.isArray(rawEvent.stop_reason.event_ids)) {
 
         for (const eventId of rawEvent.stop_reason.event_ids) {
-          const sourceEvent = toolUseCache.get(eventId);
+          const cached = toolUseCache.get(eventId);
+          const sourceEvent = cached?.event;
           if (!sourceEvent) {
             swarn(sessionId, `requires_action for unknown event_id ${eventId} — denying defensively`);
             try {
@@ -335,6 +360,15 @@ async function main() {
     if (!agentId) die('error: --setup-guide requires --agent-id <id>');
     printSetupGuide(agentId);
     process.exit(0);
+  }
+
+  // Security: --api-key on the command line ends up in shell history and in
+  // the process list. Strongly prefer the ANTHROPIC_API_KEY env var.
+  if (args['api-key']) {
+    process.stderr.write(
+      '[shield] warning: --api-key on the command line is visible in shell history and\n' +
+      '         in the process list. Prefer: export ANTHROPIC_API_KEY=...\n'
+    );
   }
 
   const singleSessionId = args['session-id']; // optional now

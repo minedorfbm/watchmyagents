@@ -8,9 +8,21 @@
 //   - a directory (recursively scans for .ndjson)
 //   - omitted → defaults to ./watchmyagents-logs
 
-import { readFile, readdir, stat } from 'node:fs/promises';
+import { readdir, stat } from 'node:fs/promises';
+import { createReadStream } from 'node:fs';
+import { createInterface } from 'node:readline';
 import { join, resolve } from 'node:path';
 import { TokenTracker } from '../src/tokens.js';
+
+// Streaming line-by-line reader — bounds memory usage on large NDJSON files
+// (a long-running agent can produce hundreds of MB per day).
+async function* readNdjsonLines(path) {
+  const stream = createReadStream(path, { encoding: 'utf8' });
+  const rl = createInterface({ input: stream, crlfDelay: Infinity });
+  for await (const line of rl) {
+    if (line.trim()) yield line;
+  }
+}
 
 const target = resolve(process.argv[2] || './watchmyagents-logs');
 
@@ -69,9 +81,7 @@ async function main() {
   let firstTs = null, lastTs = null;
 
   for (const f of files) {
-    const raw = await readFile(f, 'utf8');
-    for (const line of raw.split('\n')) {
-      if (!line.trim()) continue;
+    for await (const line of readNdjsonLines(f)) {
       let e; try { e = JSON.parse(line); } catch { continue; }
       entries.push(e);
       tracker.record(e);

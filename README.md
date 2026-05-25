@@ -116,9 +116,21 @@ wma-fetch --agent-id <agent_id> [--session-id <sess_id>] [--since 1h]
 | `--session-id sesn_xxx` | Limit to a single session |
 | `--log-dir ./logs` | Where to write NDJSON (default `./watchmyagents-logs`) |
 | `--dump-raw` | Also save raw API events alongside (forensic / debugging) |
-| `--api-key sk-ant-…` | Override the `ANTHROPIC_API_KEY` env var |
+| `--api-key sk-ant-…` | Override the `ANTHROPIC_API_KEY` env var. **Discouraged** — visible in shell history & process list. Prefer the env var. |
 
 Logs land in `./watchmyagents-logs/<agent_id>/<date>.ndjson` (file mode `0600`, dir `0700`).
+
+### `wma-anonymize` — preview what would leave your machine
+
+Produces the anonymized signals payload (counts, latencies, salted IoC hashes, sequence histograms — no raw URLs/commands/prompts) that future WMA cloud features would ship. Useful to verify Modèle C compliance and to test the format before any cloud upload feature lands.
+
+```bash
+export WMA_SIGNALS_SALT="$(node -e 'console.log(require("crypto").randomBytes(16).toString("hex"))')"
+wma-anonymize ./watchmyagents-logs
+# → JSON on stdout. Add --out signals.json to write to file.
+```
+
+The salt is a per-customer secret — store it in `.env.local` and reuse it across runs (random salt each run breaks IoC correlation).
 
 ### `wma-inspect` — audit the logs
 

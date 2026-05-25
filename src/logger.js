@@ -12,11 +12,17 @@ const EXPORT_FIELDS = [
 ];
 
 export class Logger {
-  constructor({ logDir, agentId, sessionId, silent }) {
+  // `silent`     : don't print log errors to stderr (default: true — quiet operation)
+  // `bestEffort` : SWALLOW write failures (default: false — fail loud).
+  //                Audit-grade default: refuse to silently lose events. Disk
+  //                full / EACCES / EINVAL must propagate so callers know.
+  //                Opt into bestEffort=true only for non-critical paths.
+  constructor({ logDir, agentId, sessionId, silent, bestEffort } = {}) {
     this.logDir = logDir;
     this.agentId = agentId;
     this.sessionId = sessionId || randomUUID();
     this.silent = silent !== false;
+    this.bestEffort = bestEffort === true;
     this.sequence = 0;
     this.currentDay = null;
     this.currentPath = null;
@@ -63,7 +69,10 @@ export class Logger {
       await appendFile(path, JSON.stringify(full) + '\n', { encoding: 'utf8', mode: 0o600 });
       this.count++;
     } catch (err) {
-      if (!this.silent) process.stderr.write(`[wma] log error: ${err.message}\n`);
+      if (!this.silent) process.stderr.write(`[wma] log write error: ${err.message}\n`);
+      // Audit-grade default: fail loud so callers know events are being lost.
+      // Disk full, EACCES, EINVAL etc. should NOT be silently swallowed.
+      if (!this.bestEffort) throw err;
     }
     return full;
   }
