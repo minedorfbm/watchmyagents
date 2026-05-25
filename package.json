@@ -1,7 +1,7 @@
 {
   "name": "watchmyagents",
-  "version": "0.4.0",
-  "description": "Security observability + real-time policy enforcement for AI agents — local-first NDJSON capture, Shield CLI that blocks policy violations live on Anthropic Managed Agents, and an anonymizer to produce signals-only payloads safe to ship to a cloud control plane.",
+  "version": "0.5.0",
+  "description": "Security observability + real-time policy enforcement for AI agents. Local-first NDJSON capture, Shield CLI that blocks policy violations live, anonymizer producing signals-only payloads, and an upload command that ships anonymized telemetry to WatchMyAgents Fortress (the cloud control plane).",
   "type": "module",
   "files": [
     "src/",
@@ -9,6 +9,7 @@
     "scripts/fetch-anthropic.js",
     "scripts/shield.js",
     "scripts/anonymize.js",
+    "scripts/upload-fortress.js",
     "README.md",
     "SECURITY.md",
     "LICENSE"
@@ -17,13 +18,15 @@
     "wma-inspect": "scripts/inspect.js",
     "wma-fetch": "scripts/fetch-anthropic.js",
     "wma-shield": "scripts/shield.js",
-    "wma-anonymize": "scripts/anonymize.js"
+    "wma-anonymize": "scripts/anonymize.js",
+    "wma-upload-fortress": "scripts/upload-fortress.js"
   },
   "scripts": {
     "inspect": "node scripts/inspect.js",
     "fetch": "node scripts/fetch-anthropic.js",
     "shield": "node scripts/shield.js",
-    "anonymize": "node scripts/anonymize.js"
+    "anonymize": "node scripts/anonymize.js",
+    "upload-fortress": "node scripts/upload-fortress.js"
   },
   "engines": {
     "node": ">=18.0.0"

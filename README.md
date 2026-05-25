@@ -122,7 +122,7 @@ Logs land in `./watchmyagents-logs/<agent_id>/<date>.ndjson` (file mode `0600`, 
 
 ### `wma-anonymize` — preview what would leave your machine
 
-Produces the anonymized signals payload (counts, latencies, salted IoC hashes, sequence histograms — no raw URLs/commands/prompts) that future WMA cloud features would ship. Useful to verify Modèle C compliance and to test the format before any cloud upload feature lands.
+Produces the anonymized signals payload (counts, latencies, salted IoC hashes, sequence histograms — no raw URLs/commands/prompts) that future WMA cloud features would ship. Useful to verify Modèle C compliance and to test the format.
 
 ```bash
 export WMA_SIGNALS_SALT="$(node -e 'console.log(require("crypto").randomBytes(16).toString("hex"))')"
@@ -131,6 +131,27 @@ wma-anonymize ./watchmyagents-logs
 ```
 
 The salt is a per-customer secret — store it in `.env.local` and reuse it across runs (random salt each run breaks IoC correlation).
+
+### `wma-upload-fortress` — ship anonymized signals to your WMA Fortress
+
+Anonymizes your local NDJSON and POSTs the resulting payload to the WMA Fortress cloud control plane, where Guardian AI analyzes patterns and proposes security policies for your agents.
+
+```bash
+export WMA_API_KEY="wma_..."                    # from Fortress dashboard → Settings → API Keys
+export WMA_FORTRESS_URL="https://<your-project>.supabase.co/functions/v1/ingest-signals"
+export WMA_SIGNALS_SALT="..."                   # same salt as wma-anonymize
+
+wma-upload-fortress --agent-id agent_01XaN... [--display-name "My agent"]
+# → POSTs the anonymized payload. Server returns signal_id + agent_id.
+
+# Inspect what WOULD be posted, without uploading:
+wma-upload-fortress --agent-id agent_xxx --dry-run
+```
+
+**What is sent:** counts, latencies, salted IoC hashes, sequences — same as `wma-anonymize` output.
+**What is NOT sent:** raw prompts, raw URLs/commands/queries, raw agent responses, raw error messages. All payload content stays on your machine.
+
+The endpoint auto-registers the agent on the first upload if it doesn't exist in Fortress yet — no manual onboarding needed for new agents.
 
 ### `wma-inspect` — audit the logs
 
@@ -207,11 +228,12 @@ Decisions are logged to the same NDJSON stream as Watch (`action_type: shield_de
 
 - ✅ Watch SDK — Anthropic Managed Agents post-hoc fetch + local audit
 - ✅ Shield SDK — real-time enforcement (interrupt mode + tool_confirmation mode)
+- ✅ Anonymizer — produce signals payloads (Modèle C: no raw content leaves)
+- ✅ Anonymized telemetry to WMA Fortress cloud (`wma-upload-fortress` in v0.5.0)
+- ✅ Guardian AI (cloud) — automatic policy suggestions from observed behavior
+- ✅ Fortress (cloud) — dashboard + human-in-the-loop validation queue
+- 🚧 Shield policy puller from Fortress (replace local JSON with cloud-synced policies)
 - 🚧 Encrypted upload to customer's own cloud (S3/GCS/Azure with `age` public-key encryption)
-- 🚧 Anonymized telemetry to WMA cloud (opt-in, freemium model)
-- 🚧 Guardian AI (cloud) — automatic policy suggestions from observed behavior
-- 🚧 Fortress (cloud) — dashboard + human-in-the-loop validation queue
-- 🚧 Adapters for in-process agents (Claude SDK, OpenAI, LangChain, generic) — code present in `src/adapters/` but unverified against the new Modèle C architecture; documentation will follow once re-validated
 
 ## License
 
