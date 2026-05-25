@@ -205,15 +205,30 @@ Report vulnerabilities via [SECURITY.md](./SECURITY.md).
 
 ## Shield — real-time policy enforcement
 
-`wma-shield` (shipped in v0.2.0) is the real-time enforcement companion to Watch. It streams agent events live, evaluates them against a local JSON policy file, and blocks tool calls that violate the policy via `user.tool_confirmation` (when the agent has `permission_policy: always_ask` configured) or `user.interrupt` (zero-setup fallback).
+`wma-shield` is the real-time enforcement companion to Watch. It streams agent events live, evaluates them against a policy ruleset, and blocks tool calls that violate the policy via `user.tool_confirmation` (when the agent has `permission_policy: always_ask` configured) or `user.interrupt` (zero-setup fallback).
 
+### Two policy sources (v0.6.0+)
+
+**Local JSON** (standalone — no cloud dependency):
 ```bash
-# Agent-wide mode — attaches to ALL active sessions of the agent automatically.
-# Run under a process supervisor (systemd, pm2, docker) for production.
 wma-shield --agent-id agent_xxx --policy ./policies.json
 ```
 
-Shield auto-detects the best enforcement mode at startup:
+**Fortress cloud** (policies managed in the dashboard, auto-refreshed every 5 min):
+```bash
+export ANTHROPIC_API_KEY="sk-ant-..."
+export WMA_API_KEY="wma_..."
+export WMA_FORTRESS_BASE_URL="https://<project>.supabase.co/functions/v1"
+export WMA_SIGNALS_SALT="..."          # same salt as wma-upload-fortress (for cross-table IoC correlation)
+
+wma-shield --agent-id agent_xxx --policies-source fortress
+```
+
+In Fortress mode, Shield also POSTs each enforcement decision back to Fortress (`/functions/v1/ingest-decisions`), so the dashboard's live timeline + Loop Visualizer light up in real time.
+
+### Enforcement mode auto-detection
+
+Shield auto-detects the best mode at startup:
 - **tool_confirmation** (precise, pre-execution blocking) when at least one tool has `permission_policy: always_ask`
 - **interrupt** (degraded, post-execution termination) otherwise
 
@@ -232,7 +247,8 @@ Decisions are logged to the same NDJSON stream as Watch (`action_type: shield_de
 - ✅ Anonymized telemetry to WMA Fortress cloud (`wma-upload-fortress` in v0.5.0)
 - ✅ Guardian AI (cloud) — automatic policy suggestions from observed behavior
 - ✅ Fortress (cloud) — dashboard + human-in-the-loop validation queue
-- 🚧 Shield policy puller from Fortress (replace local JSON with cloud-synced policies)
+- ✅ Shield policy puller from Fortress (`wma-shield --policies-source fortress` in v0.6.0)
+- ✅ Shield decisions push to Fortress (live timeline + Loop Visualizer)
 - 🚧 Encrypted upload to customer's own cloud (S3/GCS/Azure with `age` public-key encryption)
 
 ## License

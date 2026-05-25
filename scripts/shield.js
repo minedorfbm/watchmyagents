@@ -25,6 +25,7 @@
 // ANTHROPIC_API_KEY env var is used if --api-key is omitted.
 
 import { resolve } from 'node:path';
+import { createHash } from 'node:crypto';
 import { streamWithReconnect } from '../src/shield/stream.js';
 import { loadPolicies, evaluate } from '../src/shield/policy.js';
 import {
@@ -33,6 +34,8 @@ import {
 } from '../src/shield/enforce.js';
 import { DecisionLogger } from '../src/shield/decisions.js';
 import { listSessions } from '../src/sources/anthropic-managed.js';
+import { FortressPolicySource, postDecision } from '../src/shield/sources/fortress.js';
+import { resolveFortressBase } from '../src/fortress/url.js';
 
 function parseArgs(argv) {
   const out = {};
@@ -114,8 +117,44 @@ After either option, restart Shield — it auto-detects the new mode.
 // Per-session worker — runs one event loop, returns when session ends.
 // ────────────────────────────────────────────────────────────────────────
 async function runSessionWorker({ sessionId, ctx }) {
-  const { apiKey, agentId, ruleset, mode, decisions, signal } = ctx;
+  const { apiKey, agentId, mode, decisions, signal, pushDecisionToFortress, signalsSalt } = ctx;
+  // NOTE: ctx.ruleset is a getter — read it FRESH per evaluation so policy
+  // refreshes from Fortress (every 5 min) take effect without restart.
   sinfo(sessionId, `attached (${mode} mode)`);
+
+  // Helper: hash an IoC value with the customer salt (same one used by
+  // anonymizer for signals → correlates decisions to signals in Fortress).
+  // Returns null if no salt is configured (decisions still upload, just
+  // without input_hash).
+  const hashIoc = (value) => {
+    if (!signalsSalt || value == null) return null;
+    const s = typeof value === 'string' ? value : JSON.stringify(value);
+    return 'sha256:' + createHash('sha256').update(signalsSalt).update(s).digest('hex').slice(0, 32);
+  };
+
+  // Helper: assemble + fire the decision push to Fortress (fire-and-forget).
+  const fireToFortress = (rawEvent, normalized, result, decidedInMs) => {
+    if (!pushDecisionToFortress) return;
+    // Extract the most relevant input value to hash (URL > command > query > path)
+    const inp = normalized?.input;
+    let inputForHash = null;
+    if (inp && typeof inp === 'object') {
+      inputForHash = inp.url || inp.command || inp.query || inp.path || inp.file_path || null;
+    }
+    pushDecisionToFortress({
+      anthropic_agent_id: agentId,
+      decision: result.decision,
+      rule_id: result.rule_id || undefined,
+      session_hash: hashIoc(sessionId) || undefined,
+      event_id_hash: hashIoc(rawEvent?.id) || undefined,
+      input_hash: hashIoc(inputForHash) || undefined,
+      action_type: normalized?.action_type || undefined,
+      tool_name: normalized?.tool_name || undefined,
+      message: result.message || result.rule_name || undefined,
+      decided_at: new Date().toISOString(),
+      decided_in_ms: decidedInMs,
+    }).catch(() => undefined);
+  };
 
   let processed = 0, enforced = 0, sessionInterrupted = false;
   // Cache is only needed for tool_confirmation mode (lookup by event_id when
@@ -161,7 +200,7 @@ async function runSessionWorker({ sessionId, ctx }) {
         // No caching in interrupt mode — react synchronously, free memory.
         const normalized = normalizeForPolicy(rawEvent);
         const t0 = Date.now();
-        const result = evaluate(normalized, ruleset);
+        const result = evaluate(normalized, ctx.ruleset);
         const decidedInMs = Date.now() - t0;
 
         sinfo(sessionId, `${rawEvent.type} tool=${normalized.tool_name} → ${result.decision}${result.rule_id ? ` (${result.rule_id})` : ''}`);
@@ -171,6 +210,7 @@ async function runSessionWorker({ sessionId, ctx }) {
           ruleId: result.rule_id, ruleName: result.rule_name,
           message: result.message, decidedInMs,
         });
+        fireToFortress(rawEvent, normalized, result, decidedInMs);
 
         if ((result.decision === 'deny' || result.decision === 'interrupt') && !sessionInterrupted) {
           try {
@@ -217,7 +257,7 @@ async function runSessionWorker({ sessionId, ctx }) {
 
           const normalized = normalizeForPolicy(sourceEvent);
           const t0 = Date.now();
-          const result = evaluate(normalized, ruleset);
+          const result = evaluate(normalized, ctx.ruleset);
           const decidedInMs = Date.now() - t0;
 
           sinfo(sessionId, `requires_action ${sourceEvent.type} tool=${normalized.tool_name} → ${result.decision}${result.rule_id ? ` (${result.rule_id})` : ''}`);
@@ -227,6 +267,7 @@ async function runSessionWorker({ sessionId, ctx }) {
             ruleId: result.rule_id, ruleName: result.rule_name,
             message: result.message, decidedInMs,
           });
+          fireToFortress(sourceEvent, normalized, result, decidedInMs);
 
           try {
             if (result.decision === 'allow') {
@@ -373,17 +414,53 @@ async function main() {
 
   const singleSessionId = args['session-id']; // optional now
   const policyPath = args.policy;
+  const policiesSource = args['policies-source'] || (policyPath ? 'local' : null);
+  const wmaApiKey = args['wma-api-key'] || process.env.WMA_API_KEY;
+  const signalsSalt = args['salt'] || process.env.WMA_SIGNALS_SALT;
+  const fortressBase = resolveFortressBase({
+    explicitBase: args['fortress-base-url'],
+    explicitUrl: args['fortress-url'],
+  });
   const logDir = resolve(args['log-dir'] || './watchmyagents-logs');
 
   if (!apiKey) die('error: --api-key or ANTHROPIC_API_KEY required');
   if (!agentId) die('error: --agent-id required');
-  if (!policyPath) die('error: --policy <path-to-policies.json> required');
 
-  let ruleset;
-  try {
-    ruleset = await loadPolicies(resolve(policyPath));
-  } catch (e) {
-    die(`error loading policies: ${e.message}`);
+  // Policies source: --policies-source fortress | local  (default infers from --policy)
+  let ruleset;          // for 'local' mode: static; for 'fortress': initial snapshot
+  let fortressPolicies; // FortressPolicySource instance, used as ground truth at runtime
+
+  if (policiesSource === 'fortress') {
+    if (!wmaApiKey) die('error: --policies-source fortress requires --wma-api-key or WMA_API_KEY env');
+    if (!fortressBase) die('error: --policies-source fortress requires --fortress-base-url or WMA_FORTRESS_BASE_URL env');
+    if (!/^wma_[a-f0-9]{32}$/i.test(wmaApiKey)) warn(`WMA_API_KEY format looks unusual (expected wma_<32hex>).`);
+
+    fortressPolicies = new FortressPolicySource({
+      apiKey: wmaApiKey,
+      base: fortressBase,
+      anthropicAgentId: agentId,
+      refreshIntervalMs: 5 * 60_000,
+      onError: (e) => warn(`policy refresh failed (keeping cached): ${e.message}`),
+      onRefresh: ({ policies, fetched_at, initial }) => {
+        info(`policies ${initial ? 'loaded' : 'refreshed'} from Fortress — ${policies.length} active (fetched_at: ${fetched_at})`);
+      },
+    });
+    try {
+      await fortressPolicies.start();
+    } catch (e) {
+      die(`error fetching policies from Fortress: ${e.message}\n` +
+          `       Check WMA_FORTRESS_BASE_URL and WMA_API_KEY.`);
+    }
+    ruleset = fortressPolicies.current();
+  } else if (policiesSource === 'local') {
+    if (!policyPath) die('error: --policies-source local requires --policy <path-to-policies.json>');
+    try {
+      ruleset = await loadPolicies(resolve(policyPath));
+    } catch (e) {
+      die(`error loading policies: ${e.message}`);
+    }
+  } else {
+    die('error: --policy <path> OR --policies-source fortress required');
   }
 
   let mode = 'interrupt';
@@ -395,7 +472,10 @@ async function main() {
     warn(`could not fetch agent config (${e.message}). Defaulting to interrupt mode.`);
   }
 
-  info(`armed — ${ruleset.policies.length} policies loaded from ${policyPath}`);
+  const sourceLabel = policiesSource === 'fortress'
+    ? `Fortress (${fortressBase})`
+    : policyPath;
+  info(`armed — ${ruleset.policies.length} policies loaded from ${sourceLabel}`);
   info(`default action when no rule matches: ${ruleset.default.action}`);
   info(`agent: ${agentId}${agentMeta?.name ? ` "${agentMeta.name}"` : ''}`);
   info(`enforcement mode: ${mode}`);
@@ -414,11 +494,45 @@ async function main() {
     return loggers.get(sessionId);
   };
 
-  const ac = new AbortController();
-  process.on('SIGINT',  () => { info('SIGINT received, shutting down…'); ac.abort(); });
-  process.on('SIGTERM', () => { info('SIGTERM received, shutting down…'); ac.abort(); });
+  // Optional Fortress decision pusher — only active if we have a wma key + base.
+  // In 'fortress' mode this is always available. In 'local' mode it's a fire-
+  // and-forget extra channel if both are set.
+  const canPushToFortress = !!(wmaApiKey && fortressBase);
+  const pushDecisionToFortress = canPushToFortress
+    ? async (decisionData) => {
+        try {
+          await postDecision({ apiKey: wmaApiKey, base: fortressBase, decision: decisionData });
+        } catch (e) {
+          warn(`Fortress decision push failed: ${e.message}`);
+        }
+      }
+    : null;
 
-  const ctx = { apiKey, agentId, ruleset, mode, decisions, signal: ac.signal };
+  const ac = new AbortController();
+  process.on('SIGINT',  () => {
+    info('SIGINT received, shutting down…');
+    if (fortressPolicies) fortressPolicies.stop();
+    ac.abort();
+  });
+  process.on('SIGTERM', () => {
+    info('SIGTERM received, shutting down…');
+    if (fortressPolicies) fortressPolicies.stop();
+    ac.abort();
+  });
+
+  // ctx exposes a getter for the live ruleset so workers see policy refreshes.
+  const ctx = {
+    apiKey,
+    agentId,
+    get ruleset() {
+      return fortressPolicies ? fortressPolicies.current() : ruleset;
+    },
+    mode,
+    decisions,
+    pushDecisionToFortress,
+    signalsSalt,
+    signal: ac.signal,
+  };
 
   if (singleSessionId) {
     info(`single-session mode — attached to ${singleSessionId}`);

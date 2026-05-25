@@ -29,6 +29,7 @@ import { join, resolve } from 'node:path';
 import { createReadStream } from 'node:fs';
 import { createInterface } from 'node:readline';
 import { SignalsAggregator } from '../src/anonymizer.js';
+import { resolveFortressBase, fortressEndpoint } from '../src/fortress/url.js';
 
 function parseArgs(argv) {
   const out = {};
@@ -101,11 +102,21 @@ async function main() {
 
   const agentId = args['agent-id'];
   const logDir = resolve(args['log-dir'] || './watchmyagents-logs');
-  const fortressUrl = args['fortress-url'] || process.env.WMA_FORTRESS_URL;
   const apiKey = args['api-key'] || process.env.WMA_API_KEY;
   const salt = args.salt || process.env.WMA_SIGNALS_SALT;
   const displayName = args['display-name'] || agentId;
   const dryRun = !!args['dry-run'];
+
+  // Resolve Fortress base URL. Accepts:
+  //   --fortress-base-url <base>            (preferred CLI)
+  //   --fortress-url <full ingest-signals>  (legacy CLI)
+  //   WMA_FORTRESS_BASE_URL env             (preferred env)
+  //   WMA_FORTRESS_URL env                  (legacy env, points at ingest-signals)
+  const fortressBase = resolveFortressBase({
+    explicitBase: args['fortress-base-url'],
+    explicitUrl: args['fortress-url'],
+  });
+  const fortressUrl = fortressBase ? fortressEndpoint(fortressBase, 'ingest-signals') : null;
 
   // Validation
   if (!agentId) die('error: --agent-id required (Anthropic agent_id, e.g. agent_01XaN...)');
