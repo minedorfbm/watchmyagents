@@ -109,7 +109,11 @@ async function main() {
 
   // Validation
   if (!agentId) die('error: --agent-id required (Anthropic agent_id, e.g. agent_01XaN...)');
-  if (!agentId.startsWith('agent_')) die(`error: --agent-id must start with "agent_" (got "${agentId}")`);
+  // Strict alphanumeric to prevent path traversal in collectFiles below
+  // (--agent-id ends up as a filesystem path segment).
+  if (!/^agent_[a-zA-Z0-9]+$/.test(agentId)) {
+    die(`error: --agent-id has invalid format (expected "agent_" + alphanumeric, got "${agentId}")`);
+  }
   if (!dryRun && !fortressUrl) {
     die('error: --fortress-url or WMA_FORTRESS_URL required (full URL to /functions/v1/ingest-signals).\n' +
         '       Use --dry-run to print the payload without uploading.');
