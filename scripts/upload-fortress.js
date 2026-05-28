@@ -119,7 +119,7 @@ async function main() {
   const fortressUrl = fortressBase ? fortressEndpoint(fortressBase, 'ingest-signals') : null;
 
   // Validation
-  if (!agentId) die('error: --agent-id required (Anthropic agent_id, e.g. agent_01XaN...)');
+  if (!agentId) die('error: --agent-id required (Anthropic agent_id, e.g. agent_01ABC...)');
   // Strict alphanumeric to prevent path traversal in collectFiles below
   // (--agent-id ends up as a filesystem path segment).
   if (!/^agent_[a-zA-Z0-9]+$/.test(agentId)) {

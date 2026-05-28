@@ -25,7 +25,7 @@ You'll need:
 ```bash
 export ANTHROPIC_API_KEY="sk-ant-..."
 
-wma-fetch --agent-id agent_01XaN... --since 1h
+wma-fetch --agent-id agent_01ABC... --since 1h
 wma-inspect
 ```
 
@@ -145,7 +145,7 @@ export WMA_API_KEY="wma_..."                    # from Fortress dashboard → Se
 export WMA_FORTRESS_URL="https://<your-project>.supabase.co/functions/v1/ingest-signals"
 export WMA_SIGNALS_SALT="..."                   # same salt as wma-anonymize
 
-wma-upload-fortress --agent-id agent_01XaN... [--display-name "My agent"]
+wma-upload-fortress --agent-id agent_01ABC... [--display-name "My agent"]
 # → POSTs the anonymized payload. Server returns signal_id + agent_id.
 
 # Inspect what WOULD be posted, without uploading:
@@ -180,7 +180,7 @@ export WMA_API_KEY="wma_..."                                  # for --upload
 export WMA_FORTRESS_BASE_URL="https://<project>.supabase.co/functions/v1"
 export WMA_SIGNALS_SALT="..."                                 # stable per-customer salt
 
-wma-fetch --agent-id agent_01XaN... --watch --upload --interval 5m
+wma-fetch --agent-id agent_01ABC... --watch --upload --interval 5m
 ```
 
 It loops until `Ctrl+C`, dedupes by the stable Anthropic event id (no duplicate
@@ -194,12 +194,12 @@ If you'd rather not run a daemon, schedule one-shot fetches:
 
 ```cron
 # Every 15 minutes
-*/15 * * * * cd /path/to/project && wma-fetch --agent-id agent_01XaN... --since 20m
+*/15 * * * * cd /path/to/project && wma-fetch --agent-id agent_01ABC... --since 20m
 ```
 
 ```cron
 # Once per night, fetch the full last 24h
-5 0 * * * cd /path/to/project && wma-fetch --agent-id agent_01XaN... --since 25h
+5 0 * * * cd /path/to/project && wma-fetch --agent-id agent_01ABC... --since 25h
 ```
 
 ## Data sovereignty model

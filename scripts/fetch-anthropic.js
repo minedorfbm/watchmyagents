@@ -277,7 +277,7 @@ async function main() {
   const upload = !!args.upload;
 
   if (!apiKey) die('error: --api-key or ANTHROPIC_API_KEY required');
-  if (!agentId) die('error: --agent-id required (e.g. agent_01XaNB4M88ZvcW8FoQ5GC14A)');
+  if (!agentId) die('error: --agent-id required (e.g. agent_01ABC...)');
   if (!isValidAgentId(agentId)) {
     die(`error: --agent-id has invalid format (expected "agent_" + alphanumeric, got "${agentId}")`);
   }
