@@ -36,6 +36,7 @@ import { DecisionLogger } from '../src/shield/decisions.js';
 import { listSessions } from '../src/sources/anthropic-managed.js';
 import { FortressPolicySource, postDecision } from '../src/shield/sources/fortress.js';
 import { resolveFortressBase } from '../src/fortress/url.js';
+import { isValidAgentId } from '../src/validate.js';
 
 function parseArgs(argv) {
   const out = {};
@@ -425,6 +426,9 @@ async function main() {
 
   if (!apiKey) die('error: --api-key or ANTHROPIC_API_KEY required');
   if (!agentId) die('error: --agent-id required');
+  if (!isValidAgentId(agentId)) {
+    die(`error: --agent-id has invalid format (expected "agent_" + alphanumeric, got "${agentId}")`);
+  }
 
   // Policies source: --policies-source fortress | local  (default infers from --policy)
   let ruleset;          // for 'local' mode: static; for 'fortress': initial snapshot

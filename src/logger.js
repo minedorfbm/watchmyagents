@@ -1,6 +1,7 @@
 import { mkdir, appendFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { assertSafePathSegment } from './validate.js';
 
 const EXPORT_FIELDS = [
   'id', 'agent_id', 'framework', 'timestamp', 'action_type',
@@ -18,6 +19,9 @@ export class Logger {
   //                full / EACCES / EINVAL must propagate so callers know.
   //                Opt into bestEffort=true only for non-critical paths.
   constructor({ logDir, agentId, sessionId, silent, bestEffort } = {}) {
+    // agentId becomes a filesystem path segment (logDir/<agentId>/…). Reject
+    // anything that could traverse out of logDir before we ever build a path.
+    assertSafePathSegment(agentId, 'agentId');
     this.logDir = logDir;
     this.agentId = agentId;
     this.sessionId = sessionId || randomUUID();

@@ -58,7 +58,7 @@ const SUSPICIOUS_REGEX_PATTERNS = [
   /(\.\*){3,}/,                  // multiple .* in a row
 ];
 
-function validateRegexString(src, where) {
+export function validateRegexString(src, where) {
   if (typeof src !== 'string') {
     throw new Error(`policy ${where}: regex must be a string`);
   }
@@ -73,7 +73,7 @@ function validateRegexString(src, where) {
   return new RegExp(src);
 }
 
-function compileMatchRegexes(match) {
+export function compileMatchRegexes(match) {
   for (const [field, condition] of Object.entries(match)) {
     if (condition && typeof condition === 'object') {
       if (condition.regex) condition._regex = validateRegexString(condition.regex, `${field}.regex`);

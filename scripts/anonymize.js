@@ -16,7 +16,9 @@
 
 import { readdir, stat, writeFile } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
-import { SignalsAggregator, anonymizeFile } from '../src/anonymizer.js';
+import { SignalsAggregator } from '../src/anonymizer.js';
+import { createReadStream } from 'node:fs';
+import { createInterface } from 'node:readline';
 
 function parseArgs(argv) {
   const out = {};
@@ -84,30 +86,18 @@ and save it in .env.local.`);
     die(`error: no .ndjson files found at ${target}`);
   }
 
-  // Aggregate across all files into one big payload (typical: one fetch run)
+  // Aggregate across all files into one signals payload, single pass.
   const agg = new SignalsAggregator({ salt });
   for (const f of files) {
-    const partial = await anonymizeFile(f, { salt });
-    // Merge counts (a bit clunky — for the MVP we just re-iterate via agg)
-    // Simpler: aggregate over the files using the same agg instance.
-    // Re-implement here cleanly:
-    void partial;
-  }
-  // Re-do cleanly with a single aggregator across files:
-  const oneAgg = new SignalsAggregator({ salt });
-  for (const f of files) {
-    const { createReadStream } = await import('node:fs');
-    const { createInterface } = await import('node:readline');
-    const stream = createReadStream(f, { encoding: 'utf8' });
-    const rl = createInterface({ input: stream, crlfDelay: Infinity });
+    const rl = createInterface({ input: createReadStream(f, { encoding: 'utf8' }), crlfDelay: Infinity });
     for await (const line of rl) {
       if (!line.trim()) continue;
       let e; try { e = JSON.parse(line); } catch { continue; }
-      oneAgg.add(e);
+      agg.add(e);
     }
   }
 
-  const signals = oneAgg.finalize();
+  const signals = agg.finalize();
 
   const json = JSON.stringify(signals, null, 2);
   if (args.out) {

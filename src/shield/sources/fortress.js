@@ -111,7 +111,9 @@ export async function postDecision({ apiKey, base, decision }) {
 // Periodically refreshes the policy ruleset from Fortress.
 // ────────────────────────────────────────────────────────────────────────
 
-import { matchesPolicy } from '../policy.js';
+import { matchesPolicy, compileMatchRegexes } from '../policy.js';
+
+const VALID_ACTIONS = new Set(['allow', 'deny', 'interrupt']);
 
 export class FortressPolicySource {
   constructor({ apiKey, base, anthropicAgentId, refreshIntervalMs = 5 * 60_000, onError, onRefresh }) {
@@ -154,8 +156,18 @@ export class FortressPolicySource {
         base: this.base,
         anthropicAgentId: this.anthropicAgentId,
       });
-      // Compile regex etc. — reuse the same shape policy.js expects.
-      const compiled = policies.map((p) => compilePolicyFromFortress(p));
+      // Compile + validate each policy. A single malformed/dangerous policy
+      // (bad action, ReDoS-prone regex) must NOT take down the whole ruleset:
+      // skip it, report it, keep the rest. This matters because policies come
+      // from the cloud (Guardian-generated) — they're not fully trusted input.
+      const compiled = [];
+      for (const p of policies) {
+        try {
+          compiled.push(compilePolicyFromFortress(p));
+        } catch (e) {
+          this.onError(new Error(`skipping invalid Fortress policy "${p?.rule_id || p?.name || '?'}": ${e.message}`));
+        }
+      }
       this.ruleset = {
         version: 1,
         policies: compiled,
@@ -172,8 +184,20 @@ export class FortressPolicySource {
   }
 }
 
-// Convert a Fortress DB policy row to the local Shield format (compile regex).
+// Convert a Fortress DB policy row to the local Shield format.
+// Throws on anything invalid so _refresh can skip it (policies from the cloud
+// are NOT fully trusted — apply the same hardening as the local JSON loader).
 function compilePolicyFromFortress(p) {
+  if (!p || typeof p !== 'object') throw new Error('policy is not an object');
+  if (!VALID_ACTIONS.has(p.action)) {
+    throw new Error(`unsupported action "${p.action}" (expected allow|deny|interrupt)`);
+  }
+  if (p.match != null && typeof p.match !== 'object') {
+    throw new Error('match must be an object');
+  }
+  if (p.priority != null && (typeof p.priority !== 'number' || !Number.isFinite(p.priority))) {
+    throw new Error(`priority must be a finite number (got ${p.priority})`);
+  }
   const out = {
     id: p.rule_id,
     name: p.name,
@@ -183,18 +207,11 @@ function compilePolicyFromFortress(p) {
     message: p.message,
     priority: p.priority ?? 100,
   };
-  // Compile regex strings to RegExp via the same _regex/_not_regex/_regex_any
-  // protocol the local policy.js engine uses (avoids parsing each event).
-  // We rely on the validation already done in compileMatchRegexes within
-  // policy.js, but since we're not going through loadPolicies here we replicate
-  // the safe-compile step inline.
-  for (const [field, condition] of Object.entries(out.match)) {
-    if (condition && typeof condition === 'object') {
-      if (condition.regex) condition._regex = new RegExp(condition.regex);
-      if (condition.not_regex) condition._not_regex = new RegExp(condition.not_regex);
-      if (condition.regex_any) condition._regex_any = condition.regex_any.map(r => new RegExp(r));
-    }
-  }
+  // Reuse the SAME ReDoS-safe compiler as the local JSON loader (rejects
+  // catastrophic-backtracking patterns + over-long regexes). Previously this
+  // path used a bare new RegExp(), bypassing those guards — a dangerous remote
+  // regex could pin Shield's CPU.
+  compileMatchRegexes(out.match);
   return out;
 }
 

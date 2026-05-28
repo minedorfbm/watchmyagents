@@ -21,6 +21,9 @@ import { URLSearchParams } from 'node:url';
 const API_HOST = 'api.anthropic.com';
 const BETA = 'managed-agents-2026-04-01';
 const VERSION = '2023-06-01';
+// Hard cap on any single GET so a hung connection can't pin Watch/Shield
+// forever. getWithRetry will retry on timeout (the error propagates here).
+const REQUEST_TIMEOUT_MS = 30_000;
 
 function httpGet(apiKey, path) {
   return new Promise((resolve, reject) => {
@@ -50,6 +53,9 @@ function httpGet(apiKey, path) {
       });
     });
     req.on('error', reject);
+    req.setTimeout(REQUEST_TIMEOUT_MS, () => {
+      req.destroy(new Error(`Anthropic request timed out after ${REQUEST_TIMEOUT_MS}ms (${path})`));
+    });
     req.end();
   });
 }
@@ -165,6 +171,7 @@ export async function* fetchSessionEntries({ apiKey, agentId, sessionId, model }
       const cw = u.cache_creation_input_tokens || 0;
       yield {
         ...base,
+        id: ev.id,
         action_type: 'llm_call',
         tool_name: null,
         model: model || null,
@@ -183,6 +190,7 @@ export async function* fetchSessionEntries({ apiKey, agentId, sessionId, model }
     if (type === 'user.message') {
       yield {
         ...base,
+        id: ev.id,
         action_type: 'user_message',
         tool_name: null,
         model: model || null,
@@ -196,6 +204,7 @@ export async function* fetchSessionEntries({ apiKey, agentId, sessionId, model }
     if (type === 'user.interrupt') {
       yield {
         ...base,
+        id: ev.id,
         action_type: 'user_interrupt',
         tool_name: null,
         model: model || null,
@@ -210,6 +219,7 @@ export async function* fetchSessionEntries({ apiKey, agentId, sessionId, model }
       const denied = ev.result === 'deny';
       yield {
         ...base,
+        id: ev.id,
         action_type: 'tool_confirmation',
         tool_name: null,
         model: model || null,
@@ -225,6 +235,7 @@ export async function* fetchSessionEntries({ apiKey, agentId, sessionId, model }
     if (type === 'user.custom_tool_result') {
       yield {
         ...base,
+        id: ev.id,
         action_type: 'custom_tool_result',
         tool_name: null,
         model: model || null,
@@ -239,6 +250,7 @@ export async function* fetchSessionEntries({ apiKey, agentId, sessionId, model }
     if (type === 'agent.message') {
       yield {
         ...base,
+        id: ev.id,
         action_type: 'message',
         tool_name: null,
         model: model || null,
@@ -252,6 +264,7 @@ export async function* fetchSessionEntries({ apiKey, agentId, sessionId, model }
     if (type === 'agent.thinking') {
       yield {
         ...base,
+        id: ev.id,
         action_type: 'thinking',
         tool_name: null,
         model: model || null,
@@ -278,6 +291,7 @@ export async function* fetchSessionEntries({ apiKey, agentId, sessionId, model }
       const isError = ev.is_error === true;
       yield {
         ...base,
+        id: ev.id,
         action_type: start?.isMcp ? 'mcp_tool_use' : 'tool_use',
         tool_name: start?.name || 'unknown',
         timestamp: ts,
@@ -293,6 +307,7 @@ export async function* fetchSessionEntries({ apiKey, agentId, sessionId, model }
     if (type === 'agent.custom_tool_use') {
       yield {
         ...base,
+        id: ev.id,
         action_type: 'custom_tool_use',
         tool_name: ev.name || 'unknown',
         timestamp: ts,
@@ -306,6 +321,7 @@ export async function* fetchSessionEntries({ apiKey, agentId, sessionId, model }
     if (type === 'agent.thread_context_compacted') {
       yield {
         ...base,
+        id: ev.id,
         action_type: 'context_compacted',
         tool_name: null,
         model: model || null,
@@ -324,6 +340,7 @@ export async function* fetchSessionEntries({ apiKey, agentId, sessionId, model }
       const direction = type.endsWith('_sent') ? 'sent' : 'received';
       yield {
         ...base,
+        id: ev.id,
         action_type: `thread_message_${direction}`,
         tool_name: null,
         model: model || null,
@@ -344,6 +361,7 @@ export async function* fetchSessionEntries({ apiKey, agentId, sessionId, model }
       const { id: _id, type: _type, processed_at: _pa, created_at: _ca, ...changes } = ev;
       yield {
         ...base,
+        id: ev.id,
         action_type: 'config_change',
         tool_name: null,
         model: model || null,
@@ -357,6 +375,7 @@ export async function* fetchSessionEntries({ apiKey, agentId, sessionId, model }
     if (type === 'session.thread_created') {
       yield {
         ...base,
+        id: ev.id,
         action_type: 'thread_created',
         tool_name: null,
         model: model || null,
@@ -373,6 +392,7 @@ export async function* fetchSessionEntries({ apiKey, agentId, sessionId, model }
     if (type === 'session.error') {
       yield {
         ...base,
+        id: ev.id,
         action_type: 'session_error',
         tool_name: null,
         timestamp: ts,
@@ -393,6 +413,7 @@ export async function* fetchSessionEntries({ apiKey, agentId, sessionId, model }
       const fatal = state === 'terminated';
       yield {
         ...base,
+        id: ev.id,
         action_type: 'state_transition',
         tool_name: null,
         model: model || null,

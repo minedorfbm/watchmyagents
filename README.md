@@ -107,6 +107,7 @@ Each entry carries: `id`, `agent_id`, `framework`, `timestamp`, `action_type`, `
 ```bash
 wma-fetch --agent-id <agent_id> [--session-id <sess_id>] [--since 1h]
          [--log-dir ./watchmyagents-logs] [--dump-raw]
+         [--watch [--interval 5m] [--upload]]
 ```
 
 | Flag | Effect |
@@ -116,6 +117,9 @@ wma-fetch --agent-id <agent_id> [--session-id <sess_id>] [--since 1h]
 | `--session-id sesn_xxx` | Limit to a single session |
 | `--log-dir ./logs` | Where to write NDJSON (default `./watchmyagents-logs`) |
 | `--dump-raw` | Also save raw API events alongside (forensic / debugging) |
+| `--watch` | **Continuous daemon** — loop forever, incrementally capturing NEW events (deduped by stable event id) until `Ctrl+C` |
+| `--interval 5m` | Poll interval in watch mode (default `5m`; accepts `30s`/`1h`/…) |
+| `--upload` | In watch mode, anonymize each new window and ship signals to Fortress (needs `WMA_API_KEY` + `WMA_FORTRESS_BASE_URL` + `WMA_SIGNALS_SALT`). Raw stays local. |
 | `--api-key sk-ant-…` | Override the `ANTHROPIC_API_KEY` env var. **Discouraged** — visible in shell history & process list. Prefer the env var. |
 
 Logs land in `./watchmyagents-logs/<agent_id>/<date>.ndjson` (file mode `0600`, dir `0700`).
@@ -163,16 +167,35 @@ wma-inspect [path]
 
 Outputs sections aligned with security audit needs: tokens summary, by-tool / by-action-type breakdowns, top tool destinations (URLs / queries), action-sequence transitions, tool error rates, p50/p95/max latency per tool, rate metrics.
 
-## Automating (cron)
+## Automating — continuous monitoring
 
-For continuous monitoring, run `wma-fetch` on a cron:
+The preferred way to keep monitoring continuous is the **Watch daemon**: one
+long-running process that incrementally captures new events and (optionally)
+ships anonymized signals to Fortress, so Guardian always has fresh data with no
+manual step.
+
+```bash
+export ANTHROPIC_API_KEY="sk-ant-..."
+export WMA_API_KEY="wma_..."                                  # for --upload
+export WMA_FORTRESS_BASE_URL="https://<project>.supabase.co/functions/v1"
+export WMA_SIGNALS_SALT="..."                                 # stable per-customer salt
+
+wma-fetch --agent-id agent_01XaN... --watch --upload --interval 5m
+```
+
+It loops until `Ctrl+C`, dedupes by the stable Anthropic event id (no duplicate
+log lines across cycles), and is restart-safe (it preloads already-captured
+event ids on startup). The raw NDJSON never leaves your machine; only the
+anonymized signals are uploaded.
+
+### cron alternative (one-shot)
+
+If you'd rather not run a daemon, schedule one-shot fetches:
 
 ```cron
 # Every 15 minutes
 */15 * * * * cd /path/to/project && wma-fetch --agent-id agent_01XaN... --since 20m
 ```
-
-Or for daily reports:
 
 ```cron
 # Once per night, fetch the full last 24h
