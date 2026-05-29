@@ -151,15 +151,35 @@ function launchctl(args, { ignoreError = false } = {}) {
   }
 }
 
+// Synchronous sleep (installer CLI — blocking is fine). Used to let launchd's
+// asynchronous bootout finish before we bootstrap again.
+function syncSleep(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+function macLoaded(label) {
+  try { execFileSync('launchctl', ['print', `gui/${UID}/${label}`], { stdio: 'pipe' }); return true; }
+  catch { return false; }
+}
+
 function macLoad(label, plist) {
   const domain = `gui/${UID}`;
-  launchctl(['bootout', `${domain}/${label}`], { ignoreError: true }); // unload prior
-  const ok = launchctl(['bootstrap', domain, plist]);
+  // bootout is async: on reinstall, bootstrapping again before the old instance
+  // is gone races and silently fails (symptom: reinstall = dead services).
+  // Wait for the prior instance to disappear, then retry bootstrap.
+  if (macLoaded(label)) {
+    launchctl(['bootout', `${domain}/${label}`], { ignoreError: true });
+    for (let i = 0; i < 20 && macLoaded(label); i++) syncSleep(150);
+  }
+  let ok = false;
+  for (let attempt = 0; attempt < 5 && !ok; attempt++) {
+    ok = launchctl(['bootstrap', domain, plist], { ignoreError: attempt < 4 });
+    if (!ok) syncSleep(250);
+  }
   launchctl(['enable', `${domain}/${label}`], { ignoreError: true });
   if (ok) info(`loaded ${label} (launchd) — running now + at every login`);
   else {
     warn(`could not auto-load ${label}. Load it manually:`);
-    process.stdout.write(`  launchctl bootstrap gui/${UID} ${plist}\n`);
+    process.stdout.write(`  launchctl bootout gui/${UID}/${label} 2>/dev/null; launchctl bootstrap gui/${UID} ${plist}\n`);
   }
 }
 
