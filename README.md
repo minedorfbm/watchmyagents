@@ -169,17 +169,36 @@ Outputs sections aligned with security audit needs: tokens summary, by-tool / by
 
 ## Automating — continuous monitoring
 
-The preferred way to keep monitoring continuous is the **Watch daemon**: one
-long-running process that incrementally captures new events and (optionally)
-ships anonymized signals to Fortress, so Guardian always has fresh data with no
-manual step.
+### `wma-service` — install as an always-on service (recommended)
+
+The turnkey way: install Watch (and optionally Shield) as an OS-native service
+that starts at login, restarts on crash, and runs with **no terminal**.
 
 ```bash
 export ANTHROPIC_API_KEY="sk-ant-..."
-export WMA_API_KEY="wma_..."                                  # for --upload
+export WMA_API_KEY="wma_..."
 export WMA_FORTRESS_BASE_URL="https://<project>.supabase.co/functions/v1"
 export WMA_SIGNALS_SALT="..."                                 # stable per-customer salt
 
+wma-service install --agent-id agent_01ABC... --interval 5m [--with-shield]
+wma-service status
+wma-service uninstall [--with-shield]
+```
+
+- macOS → **launchd** LaunchAgent · Linux → **systemd** user unit.
+- Secrets are snapshotted to `~/.watchmyagents/env` (**chmod 600**) and loaded at
+  runtime — **never** written into the plist/unit.
+- `--with-shield` also runs `wma-shield --policies-source fortress` always-on for
+  live enforcement.
+- Raw logs stay local (`~/.watchmyagents/logs`); only anonymized signals upload.
+
+After this, the full Watch→Guardian→Shield loop runs hands-off.
+
+### `wma-fetch --watch` — the daemon directly
+
+If you'd rather run the loop in a terminal you control (the service wraps this):
+
+```bash
 wma-fetch --agent-id agent_01ABC... --watch --upload --interval 5m
 ```
 

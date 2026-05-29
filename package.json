@@ -1,7 +1,7 @@
 {
   "name": "watchmyagents",
-  "version": "0.7.0",
-  "description": "Security observability + real-time policy enforcement for AI agents. Local-first NDJSON capture with a continuous Watch daemon that auto-uploads anonymized signals, Shield CLI that blocks policy violations live (with policies pulled from Fortress cloud), anonymizer producing signals-only payloads, and bidirectional sync with WatchMyAgents Fortress — closing the recursive Watch→Guardian→Shield security loop.",
+  "version": "0.8.0",
+  "description": "Security observability + real-time policy enforcement for AI agents. Local-first NDJSON capture with a continuous Watch daemon that auto-uploads anonymized signals, Shield CLI that blocks policy violations live (with policies pulled from Fortress cloud), anonymizer producing signals-only payloads, bidirectional sync with WatchMyAgents Fortress, and one-command install as an always-on launchd/systemd service — closing the recursive Watch→Guardian→Shield security loop.",
   "type": "module",
   "files": [
     "src/",
@@ -10,6 +10,7 @@
     "scripts/shield.js",
     "scripts/anonymize.js",
     "scripts/upload-fortress.js",
+    "scripts/service.js",
     "README.md",
     "SECURITY.md",
     "LICENSE"
@@ -19,14 +20,16 @@
     "wma-fetch": "scripts/fetch-anthropic.js",
     "wma-shield": "scripts/shield.js",
     "wma-anonymize": "scripts/anonymize.js",
-    "wma-upload-fortress": "scripts/upload-fortress.js"
+    "wma-upload-fortress": "scripts/upload-fortress.js",
+    "wma-service": "scripts/service.js"
   },
   "scripts": {
     "inspect": "node scripts/inspect.js",
     "fetch": "node scripts/fetch-anthropic.js",
     "shield": "node scripts/shield.js",
     "anonymize": "node scripts/anonymize.js",
-    "upload-fortress": "node scripts/upload-fortress.js"
+    "upload-fortress": "node scripts/upload-fortress.js",
+    "service": "node scripts/service.js"
   },
   "engines": {
     "node": ">=18.0.0"
