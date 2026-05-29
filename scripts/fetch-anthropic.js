@@ -202,76 +202,95 @@ async function fetchOneShot({ apiKey, agentId, model, logDir, since, sessionId, 
 }
 
 // ── CONTINUOUS / DAEMON (single agent or whole fleet) ───────────────────────
-// `agents` = [{ agentId, model, displayName }]. One process watches them all.
-async function runWatch({ apiKey, agents, logDir, intervalMs, uploadCtx }) {
+// resolveAgents() returns the current fleet [{agentId, model, displayName}] each
+// cycle — in fleet mode it RE-DISCOVERS so agents created after startup get picked
+// up. `windowMs` bounds discovery of NEW sessions, but sessions we're ALREADY
+// tracking are re-fetched regardless of age, so a long-running (>window) session
+// never drops out of capture. `sendNames`: include the human agent name in the
+// Fortress display_name (opt-in); default sends the agent id only (Modèle C).
+async function runWatch({ apiKey, resolveAgents, fleet, logDir, intervalMs, windowMs, uploadCtx, sendNames }) {
+  let agents = await resolveAgents();
   const seenIds = new Set();     // stable Anthropic event ids already captured
   for (const ag of agents) {
     for (const id of await preloadSeenIds(logDir, ag.agentId)) seenIds.add(id);
   }
   const loggers = new Map();     // sessionId → Logger (session ids are globally unique)
-  const ended = new Set();       // sessions we've already closed with session_end
+  const ended = new Set();       // terminated sessions (skip)
+  const sessionAgent = new Map();// sessionId → { agentId, model, displayName }
 
   const ac = new AbortController();
   const shutdown = () => { info('shutting down…'); ac.abort(); };
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
 
-  const fleet = agents.length > 1;
-  info(`watch mode — ${agents.length} agent(s), interval ${Math.round(intervalMs / 1000)}s, upload ${uploadCtx ? 'ON' : 'OFF'}, ${seenIds.size} known events preloaded`);
+  info(`watch mode — ${agents.length} agent(s)${fleet ? ' (fleet, re-discovered each cycle)' : ''}, interval ${Math.round(intervalMs / 1000)}s, discovery window ${Math.round(windowMs / 3600000)}h, upload ${uploadCtx ? 'ON' : 'OFF'}, ${seenIds.size} known events preloaded`);
 
   while (!ac.signal.aborted) {
-    const since = new Date(Date.now() - 24 * 3600 * 1000);
-    let cycleNew = 0;
+    if (fleet) { const next = await resolveAgents(); if (next.length) agents = next; }
+    const since = new Date(Date.now() - windowMs);
 
+    // (1) Discover sessions in the window; register the owning agent for each.
     for (const ag of agents) {
       if (ac.signal.aborted) break;
       const tag = fleet ? `[${ag.displayName}] ` : '';
       let sessions = [];
       try { sessions = await listSessions(apiKey, { agentId: ag.agentId, since }); }
       catch (e) { warn(`${tag}listSessions failed: ${e.message}`); continue; }
-
       for (const s of sessions) {
-        if (!s.id || ended.has(s.id)) continue;
-        let logger = loggers.get(s.id);
-        if (!logger) { logger = new Logger({ logDir, agentId: ag.agentId, sessionId: s.id, silent: true }); loggers.set(s.id, logger); }
+        if (s.id && !ended.has(s.id) && !sessionAgent.has(s.id)) {
+          sessionAgent.set(s.id, { agentId: ag.agentId, model: ag.model, displayName: ag.displayName });
+        }
+      }
+    }
 
-        const fresh = [];
-        let sawTerminated = false;
+    // (2) Capture every tracked, not-yet-ended session — REGARDLESS of age. This
+    // is what stops a long-running session created before the window from silently
+    // dropping out of monitoring (and, paired with Shield, out of enforcement).
+    let cycleNew = 0;
+    for (const [sid, ag] of sessionAgent) {
+      if (ac.signal.aborted) break;
+      if (ended.has(sid)) continue;
+      const tag = fleet ? `[${ag.displayName}] ` : '';
+      let logger = loggers.get(sid);
+      if (!logger) { logger = new Logger({ logDir, agentId: ag.agentId, sessionId: sid, silent: true }); loggers.set(sid, logger); }
+
+      const fresh = [];
+      let sawTerminated = false;
+      try {
+        for await (const entry of fetchSessionEntries({ apiKey, agentId: ag.agentId, sessionId: sid, model: ag.model })) {
+          if (entry.id && seenIds.has(entry.id)) continue;
+          if (entry.id) seenIds.add(entry.id);
+          const written = await logger.write(entry);
+          fresh.push(written);
+          if (entry.action_type === 'state_transition'
+              && entry.output?.scope === 'session'
+              && entry.output?.state === 'terminated') sawTerminated = true;
+        }
+      } catch (e) { warn(`${tag}session ${sid.slice(0, 16)}…: fetch failed: ${e.message}`); continue; }
+
+      if (fresh.length === 0) continue;
+      cycleNew += fresh.length;
+      info(`${tag}session ${sid.slice(0, 16)}…: +${fresh.length} new event(s)`);
+
+      if (uploadCtx) {
         try {
-          for await (const entry of fetchSessionEntries({ apiKey, agentId: ag.agentId, sessionId: s.id, model: ag.model })) {
-            if (entry.id && seenIds.has(entry.id)) continue;
-            if (entry.id) seenIds.add(entry.id);
-            const written = await logger.write(entry);
-            fresh.push(written);
-            if (entry.action_type === 'state_transition'
-                && entry.output?.scope === 'session'
-                && entry.output?.state === 'terminated') sawTerminated = true;
-          }
-        } catch (e) { warn(`${tag}session ${s.id.slice(0, 16)}…: fetch failed: ${e.message}`); continue; }
+          const resp = await uploadSignals(uploadCtx, ag.agentId, sendNames ? ag.displayName : ag.agentId, fresh);
+          if (resp?.signal_id) info(`  ↑ signals uploaded (signal_id ${resp.signal_id})`);
+        } catch (e) { warn(`  signals upload failed: ${e.message}`); }
+      }
 
-        if (fresh.length === 0) continue;
-        cycleNew += fresh.length;
-        info(`${tag}session ${s.id.slice(0, 16)}…: +${fresh.length} new event(s)`);
-
-        if (uploadCtx) {
-          try {
-            const resp = await uploadSignals(uploadCtx, ag.agentId, ag.displayName, fresh);
-            if (resp?.signal_id) info(`  ↑ signals uploaded (signal_id ${resp.signal_id})`);
-          } catch (e) { warn(`  signals upload failed: ${e.message}`); }
-        }
-
-        if (sawTerminated) {
-          const tracker = new TokenTracker();
-          for (const e of fresh) tracker.record(e);
-          const stats = tracker.stats().total;
-          await logger.write({
-            action_type: 'session_end', framework: 'anthropic-managed', status: 'ok', model: ag.model,
-            session_tokens: { input: stats.input, output: stats.output, cache_read: stats.cache_read, cache_creation: stats.cache_creation, total: stats.sum },
-            session_cost_usd: stats.cost_usd || null,
-          });
-          ended.add(s.id);
-          info(`${tag}session ${s.id.slice(0, 16)}… terminated — closed`);
-        }
+      if (sawTerminated) {
+        const tracker = new TokenTracker();
+        for (const e of fresh) tracker.record(e);
+        const stats = tracker.stats().total;
+        await logger.write({
+          action_type: 'session_end', framework: 'anthropic-managed', status: 'ok', model: ag.model,
+          session_tokens: { input: stats.input, output: stats.output, cache_read: stats.cache_read, cache_creation: stats.cache_creation, total: stats.sum },
+          session_cost_usd: stats.cost_usd || null,
+        });
+        ended.add(sid);
+        sessionAgent.delete(sid);   // bound memory: terminated sessions aren't re-fetched
+        info(`${tag}session ${sid.slice(0, 16)}… terminated — closed`);
       }
     }
 
@@ -318,30 +337,49 @@ async function main() {
     uploadCtx = { apiKey: wmaKey, salt, url: fortressEndpoint(base, 'ingest-signals') };
   }
 
-  // Resolve the agent list: the whole fleet (--all-agents) or a single agent.
-  let agents;
-  if (allAgents) {
-    info('discovering agents (fleet mode)…');
-    const all = await listAgents(apiKey).catch((e) => die(`failed to list agents: ${e.message}`));
-    agents = all
-      .filter((a) => a.id && isValidAgentId(a.id))
-      .map((a) => ({ agentId: a.id, model: resolveModel(a), displayName: cleanLabel(a.name || a.id) }));
-    if (agents.length === 0) die('error: no agents found under this API key');
-    info(`fleet: ${agents.length} agent(s) — ${agents.map((a) => a.displayName).join(', ')}`);
+  if (watch) {
+    const intervalMs = parseDurationMs(args.interval, 5 * 60_000);
+    // Discovery window for NEW sessions (default 7d, configurable). Sessions we
+    // already track are re-fetched regardless of age, so long-lived ones don't drop.
+    const windowMs = parseDurationMs(args['discovery-since'], 7 * 24 * 3600_000);
+    const sendNames = !!args['send-agent-names'];
+
+    let resolveAgents;
+    if (allAgents) {
+      // Re-discover the fleet each cycle: agents created after startup get picked
+      // up, gone ones drop off. Keep the last good list if a discovery call fails.
+      let lastFleet = [];
+      resolveAgents = async () => {
+        const all = await listAgents(apiKey).catch((e) => { warn(`fleet re-discovery failed (keeping last): ${e.message}`); return null; });
+        if (!all) return lastFleet;
+        const next = all
+          .filter((a) => a.id && isValidAgentId(a.id))
+          .map((a) => ({ agentId: a.id, model: resolveModel(a), displayName: cleanLabel(a.name || a.id) }));
+        const prev = new Set(lastFleet.map((a) => a.agentId));
+        const cur = new Set(next.map((a) => a.agentId));
+        for (const a of next) if (!prev.has(a.agentId)) info(`fleet: + ${a.displayName}`);
+        for (const a of lastFleet) if (!cur.has(a.agentId)) info(`fleet: − ${a.displayName} (gone)`);
+        lastFleet = next;
+        return next;
+      };
+      info('discovering agents (fleet mode)…');
+      const first = await resolveAgents();
+      if (first.length === 0) die('error: no agents found under this API key');
+      info(`fleet: ${first.length} agent(s) — ${first.map((a) => a.displayName).join(', ')}`);
+    } else {
+      info(`resolving agent ${agentId}…`);
+      const agent = await getAgent(apiKey, agentId).catch((e) => die(`failed to GET agent: ${e.message}`));
+      const single = [{ agentId, model: resolveModel(agent), displayName: cleanLabel(agent.name || agentId) }];
+      info(`model: ${single[0].model || '(unknown)'}`);
+      resolveAgents = async () => single;
+    }
+
+    await runWatch({ apiKey, resolveAgents, fleet: allAgents, logDir, intervalMs, windowMs, uploadCtx, sendNames });
   } else {
     info(`resolving agent ${agentId}…`);
     const agent = await getAgent(apiKey, agentId).catch((e) => die(`failed to GET agent: ${e.message}`));
-    agents = [{ agentId, model: resolveModel(agent), displayName: cleanLabel(agent.name || agentId) }];
-    info(`model: ${agents[0].model || '(unknown)'}`);
-  }
-
-  if (watch) {
-    const intervalMs = parseDurationMs(args.interval, 5 * 60_000);
-    await runWatch({ apiKey, agents, logDir, intervalMs, uploadCtx });
-  } else {
     const since = args.since ? parseSince(args.since) : null;
-    const a = agents[0];
-    await fetchOneShot({ apiKey, agentId: a.agentId, model: a.model, logDir, since, sessionId: args['session-id'], dumpRaw: !!args['dump-raw'] });
+    await fetchOneShot({ apiKey, agentId, model: resolveModel(agent), logDir, since, sessionId: args['session-id'], dumpRaw: !!args['dump-raw'] });
   }
 }
 

@@ -121,6 +121,8 @@ wma-fetch (--agent-id <agent_id> | --all-agents) [--session-id <sess_id>] [--sin
 | `--watch` | **Continuous daemon** — loop forever, incrementally capturing NEW events (deduped by stable event id) until `Ctrl+C` |
 | `--interval 5m` | Poll interval in watch mode (default `5m`; accepts `30s`/`1h`/…) |
 | `--upload` | In watch mode, anonymize each new window and ship signals to Fortress (needs `WMA_API_KEY` + `WMA_FORTRESS_BASE_URL` + `WMA_SIGNALS_SALT`). Raw stays local. |
+| `--discovery-since 7d` | Window for discovering NEW sessions (default `7d`). Sessions already being tracked are re-fetched regardless of age, so long-running ones never drop out. |
+| `--send-agent-names` | Opt-in: send the human agent name as the Fortress `display_name`. Default sends the agent id only (the name may contain client/project info). |
 | `--api-key sk-ant-…` | Override the `ANTHROPIC_API_KEY` env var. **Discouraged** — visible in shell history & process list. Prefer the env var. |
 
 Logs land in `./watchmyagents-logs/<agent_id>/<date>.ndjson` (file mode `0600`, dir `0700`).
@@ -153,7 +155,7 @@ wma-upload-fortress --agent-id agent_01ABC... [--display-name "My agent"]
 wma-upload-fortress --agent-id agent_xxx --dry-run
 ```
 
-**What is sent:** counts, latencies, salted IoC hashes, sequences — same as `wma-anonymize` output.
+**What is sent:** the anonymized signals payload (counts, latencies, salted IoC hashes, sequences — same as `wma-anonymize` output) **plus two routing identifiers**: your `anthropic_agent_id` and a `display_name`. The agent id is required so Fortress can associate signals with the right agent; `display_name` defaults to the agent id and only carries the human-readable agent name if you opt in (`wma-fetch --watch --upload --send-agent-names`).
 **What is NOT sent:** raw prompts, raw URLs/commands/queries, raw agent responses, raw error messages. All payload content stays on your machine.
 
 The endpoint auto-registers the agent on the first upload if it doesn't exist in Fortress yet — no manual onboarding needed for new agents.
@@ -245,9 +247,9 @@ WatchMyAgents is built so that **your prompts and outputs never have to leave yo
 |---|---|
 | **Your machine** (`./watchmyagents-logs/`) | Full NDJSON with all prompts, tool inputs, agent outputs. `chmod 600` on every file. |
 | **Anthropic API** | Where the agent runs. WMA pulls events via the public REST API only. |
-| **WMA infrastructure** | **Nothing today.** Future opt-in telemetry will ship only anonymized metadata (counts, timings, hashes) — never raw payloads. |
+| **WMA Fortress** (opt-in, only with `--upload` / `wma-upload-fortress` / `wma-shield --policies-source fortress`) | The **anonymized signals** payload (counts, timings, salted hashes, sequences) + two routing identifiers: your `anthropic_agent_id` and a `display_name` (defaults to the agent id; the human agent name only with `--send-agent-names`). Shield enforcement **decisions** (hashed session/event/input fingerprints — never raw values). **Never** raw prompts, URLs, commands, or outputs. |
 
-This is the "local-first" guarantee. It is the product, not a marketing claim.
+This is the "local-first" guarantee: **raw payloads never leave your machine.** Cloud upload is opt-in and carries only anonymized metadata + the agent id/name needed to route it.
 
 ## Security
 

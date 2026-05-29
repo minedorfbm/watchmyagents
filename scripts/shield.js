@@ -57,6 +57,14 @@ function info(msg) { process.stdout.write(`[shield] ${msg}\n`); }
 function warn(msg) { process.stderr.write(`[shield] ⚠️  ${msg}\n`); }
 function sinfo(sid, msg) { process.stdout.write(`[shield/${sid.slice(0, 12)}] ${msg}\n`); }
 function swarn(sid, msg) { process.stderr.write(`[shield/${sid.slice(0, 12)}] ⚠️  ${msg}\n`); }
+const sleep = (ms, signal) => new Promise((res) => {
+  const t = setTimeout(res, ms);
+  if (signal) signal.addEventListener('abort', () => { clearTimeout(t); res(); }, { once: true });
+});
+function parseWindowMs(v, fallback) {
+  const m = v && String(v).match(/^(\d+)\s*([smhd])$/);
+  return m ? parseInt(m[1], 10) * { s: 1000, m: 60_000, h: 3_600_000, d: 86_400_000 }[m[2]] : fallback;
+}
 
 const CACHEABLE_TOOL_TYPES = new Set([
   'agent.tool_use', 'agent.mcp_tool_use', 'agent.custom_tool_use',
@@ -319,6 +327,10 @@ async function runSessionWorker({ sessionId, ctx }) {
 // ────────────────────────────────────────────────────────────────────────
 async function runAgentWide(ctx) {
   const { apiKey, agentId, signal } = ctx;
+  // Discovery window for sessions we haven't attached yet (default 7d). Already-
+  // attached workers stream until the session terminates regardless of age, so a
+  // long-running session never loses enforcement once attached.
+  const discoveryWindowMs = ctx.discoveryWindowMs || 7 * 24 * 3600_000;
   const workers = new Map();      // sessionId → AbortController (active workers)
   const cooldown = new Map();     // sessionId → unix-ms timestamp when re-attach is allowed
 
@@ -332,9 +344,7 @@ async function runAgentWide(ctx) {
   async function discoverAndAttach() {
     let sessions;
     try {
-      // Look at sessions from the last 24h (anything older that's still idle
-      // is probably stale; the user can extend the window if needed).
-      const since = new Date(Date.now() - 24 * 3600_000);
+      const since = new Date(Date.now() - discoveryWindowMs);
       sessions = await listSessions(apiKey, { agentId, since });
     } catch (e) {
       warn(`listSessions failed: ${e.message}`);
@@ -424,6 +434,7 @@ async function main() {
   });
   const logDir = resolve(args['log-dir'] || './watchmyagents-logs');
   const allAgents = !!args['all-agents'];
+  const discoveryWindowMs = parseWindowMs(args['discovery-since'], 7 * 24 * 3600_000);
 
   if (!apiKey) die('error: --api-key or ANTHROPIC_API_KEY required');
   if (!allAgents && !agentId) die('error: --agent-id required (or --all-agents for fleet mode)');
@@ -530,22 +541,47 @@ async function main() {
     return {
       apiKey, agentId: aid,
       get ruleset() { return fortressPolicies ? fortressPolicies.current() : ruleset; },
-      mode, decisions, pushDecisionToFortress, signalsSalt, signal: ac.signal,
+      mode, decisions, pushDecisionToFortress, signalsSalt, signal: ac.signal, discoveryWindowMs,
     };
   }
 
-  // Phase 1: arm every agent. Fail LOUD if none armed (otherwise the process would
-  // exit silently and — under launchd/systemd — restart-loop without a clear cause).
-  const ctxs = (await Promise.all(agentIds.map(setupAgent))).filter(Boolean);
-  if (ctxs.length === 0) {
+  if (!fleet) {
+    // Single agent: arm + run (blocks until SIGINT/SIGTERM). die() on failure
+    // already fires inside setupAgent for the non-fleet path.
+    const ctx = await setupAgent(agentIds[0]);
+    await (singleSessionId ? runSessionWorker({ sessionId: singleSessionId, ctx }) : runAgentWide(ctx));
+    return;
+  }
+
+  // Fleet: arm all discovered agents, then RECONCILE periodically so an agent
+  // created after startup gets armed + protected without a restart. A per-agent
+  // arm failure is skipped and retried on the next reconcile.
+  const armed = new Set();
+  const running = [];
+  const armNew = async (ids) => {
+    for (const aid of ids) {
+      if (armed.has(aid)) continue;
+      const ctx = await setupAgent(aid);
+      if (!ctx) continue;                 // skipped (policy fetch failed) → retry next reconcile
+      armed.add(aid);
+      running.push(runAgentWide(ctx));    // fire; blocks on the shared signal until shutdown
+      info(`fleet: armed ${aid.slice(0, 16)}…`);
+    }
+  };
+  await armNew(agentIds);
+  if (armed.size === 0) {
     die(`error: no agents could be armed (${agentIds.length} discovered; all policy fetches failed). Check WMA_API_KEY / WMA_FORTRESS_BASE_URL.`);
   }
-  if (fleet) info(`armed ${ctxs.length}/${agentIds.length} agent(s); watching.`);
-
-  // Phase 2: run each agent's loop (blocks until SIGINT/SIGTERM).
-  await Promise.all(ctxs.map((ctx) => (
-    singleSessionId ? runSessionWorker({ sessionId: singleSessionId, ctx }) : runAgentWide(ctx)
-  )));
+  info(`fleet: ${armed.size}/${agentIds.length} agent(s) armed; reconciling every 60s for new agents.`);
+  while (!ac.signal.aborted) {
+    await sleep(60_000, ac.signal);
+    if (ac.signal.aborted) break;
+    let all;
+    try { all = await listAgents(apiKey); }
+    catch (e) { warn(`fleet reconcile failed (keeping current): ${e.message}`); continue; }
+    await armNew(all.map((a) => a.id).filter((id) => id && isValidAgentId(id)));
+  }
+  await Promise.all(running);
 }
 
 main().catch(e => {
