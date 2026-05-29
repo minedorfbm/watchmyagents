@@ -36,7 +36,7 @@ import { DecisionLogger } from '../src/shield/decisions.js';
 import { listSessions } from '../src/sources/anthropic-managed.js';
 import { FortressPolicySource, postDecision } from '../src/shield/sources/fortress.js';
 import { resolveFortressBase } from '../src/fortress/url.js';
-import { isValidAgentId } from '../src/validate.js';
+import { isValidAgentId, isValidSessionId } from '../src/validate.js';
 
 function parseArgs(argv) {
   const out = {};
@@ -428,6 +428,11 @@ async function main() {
   if (!agentId) die('error: --agent-id required');
   if (!isValidAgentId(agentId)) {
     die(`error: --agent-id has invalid format (expected "agent_" + alphanumeric, got "${agentId}")`);
+  }
+  // --session-id ends up in the Anthropic SSE URL path (src/shield/stream.js).
+  // Validate the same way wma-fetch does so a crafted value can't tamper the URL.
+  if (singleSessionId && !isValidSessionId(singleSessionId)) {
+    die(`error: --session-id has invalid format (expected "sesn_" + alphanumeric, got "${singleSessionId}")`);
   }
 
   // Policies source: --policies-source fortress | local  (default infers from --policy)
