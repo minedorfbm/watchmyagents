@@ -105,14 +105,15 @@ Each entry carries: `id`, `agent_id`, `framework`, `timestamp`, `action_type`, `
 ### `wma-fetch` — pull events from Anthropic Managed Agents
 
 ```bash
-wma-fetch --agent-id <agent_id> [--session-id <sess_id>] [--since 1h]
+wma-fetch (--agent-id <agent_id> | --all-agents) [--session-id <sess_id>] [--since 1h]
          [--log-dir ./watchmyagents-logs] [--dump-raw]
          [--watch [--interval 5m] [--upload]]
 ```
 
 | Flag | Effect |
 |---|---|
-| `--agent-id agent_xxx` | Required — Anthropic agent identifier |
+| `--agent-id agent_xxx` | Anthropic agent identifier (required unless `--all-agents`) |
+| `--all-agents` | **Fleet mode** (requires `--watch`) — discover ALL agents under the key and watch them in a single process |
 | `--since 1h` / `24h` / `7d` | Fetch window (default: all) |
 | `--session-id sesn_xxx` | Limit to a single session |
 | `--log-dir ./logs` | Where to write NDJSON (default `./watchmyagents-logs`) |
@@ -167,6 +168,21 @@ wma-inspect [path]
 
 Outputs sections aligned with security audit needs: tokens summary, by-tool / by-action-type breakdowns, top tool destinations (URLs / queries), action-sequence transitions, tool error rates, p50/p95/max latency per tool, rate metrics.
 
+### `wma-agents` — discover + classify your agents (typology)
+
+Lists every Managed Agent under your key and classifies each one's **typology**
+(one of 10 Guardian Core archetypes) from its OBSERVED behaviour in your local
+logs — which drives the cold-start Shield template. Modèle C: reads local logs
+only (tool-category fractions, never raw content) and transmits nothing.
+
+```bash
+wma-agents list [--log-dir ~/.watchmyagents/logs] [--json]
+```
+
+With fewer than ~50 observed events an agent stays `generic` (cold start) and
+refines as activity accumulates. Re-classification to a *less strict* type is
+gated (raised confidence + longer window) to resist mimicry-evasion.
+
 ## Automating — continuous monitoring
 
 ### `wma-service` — install as an always-on service (recommended)
@@ -180,7 +196,7 @@ export WMA_API_KEY="wma_..."
 export WMA_FORTRESS_BASE_URL="https://<project>.supabase.co/functions/v1"
 export WMA_SIGNALS_SALT="..."                                 # stable per-customer salt
 
-wma-service install --agent-id agent_01ABC... --interval 5m [--with-shield]
+wma-service install (--agent-id agent_01ABC... | --all-agents) [--interval 5m] [--with-shield]
 wma-service status
 wma-service uninstall [--with-shield]
 ```

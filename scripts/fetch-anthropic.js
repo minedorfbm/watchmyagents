@@ -31,7 +31,7 @@ import { SignalsAggregator } from '../src/anonymizer.js';
 import { resolveFortressBase, fortressEndpoint } from '../src/fortress/url.js';
 import { isValidAgentId, isValidSessionId, assertSafePathSegment } from '../src/validate.js';
 import {
-  getAgent, listSessions, fetchSessionEntries, fetchRawEvents,
+  getAgent, listAgents, listSessions, fetchSessionEntries, fetchRawEvents,
 } from '../src/sources/anthropic-managed.js';
 
 function parseArgs(argv) {
@@ -198,10 +198,14 @@ async function fetchOneShot({ apiKey, agentId, model, logDir, since, sessionId, 
   process.stdout.write(`[wma-fetch] inspect with: npx wma-inspect ${logDir}\n`);
 }
 
-// ── CONTINUOUS / DAEMON ─────────────────────────────────────────────────────
-async function runWatch({ apiKey, agentId, model, displayName, logDir, intervalMs, uploadCtx }) {
-  const seenIds = await preloadSeenIds(logDir, agentId);
-  const loggers = new Map();     // sessionId → Logger (persists sequence across cycles)
+// ── CONTINUOUS / DAEMON (single agent or whole fleet) ───────────────────────
+// `agents` = [{ agentId, model, displayName }]. One process watches them all.
+async function runWatch({ apiKey, agents, logDir, intervalMs, uploadCtx }) {
+  const seenIds = new Set();     // stable Anthropic event ids already captured
+  for (const ag of agents) {
+    for (const id of await preloadSeenIds(logDir, ag.agentId)) seenIds.add(id);
+  }
+  const loggers = new Map();     // sessionId → Logger (session ids are globally unique)
   const ended = new Set();       // sessions we've already closed with session_end
 
   const ac = new AbortController();
@@ -209,56 +213,62 @@ async function runWatch({ apiKey, agentId, model, displayName, logDir, intervalM
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
 
-  info(`watch mode — interval ${Math.round(intervalMs / 1000)}s, upload ${uploadCtx ? 'ON' : 'OFF'}, ${seenIds.size} known events preloaded`);
+  const fleet = agents.length > 1;
+  info(`watch mode — ${agents.length} agent(s), interval ${Math.round(intervalMs / 1000)}s, upload ${uploadCtx ? 'ON' : 'OFF'}, ${seenIds.size} known events preloaded`);
 
   while (!ac.signal.aborted) {
     const since = new Date(Date.now() - 24 * 3600 * 1000);
-    let sessions = [];
-    try { sessions = await listSessions(apiKey, { agentId, since }); }
-    catch (e) { warn(`listSessions failed: ${e.message}`); }
-
     let cycleNew = 0;
-    for (const s of sessions) {
-      if (!s.id || ended.has(s.id)) continue;
-      let logger = loggers.get(s.id);
-      if (!logger) { logger = new Logger({ logDir, agentId, sessionId: s.id, silent: true }); loggers.set(s.id, logger); }
 
-      const fresh = [];
-      let sawTerminated = false;
-      try {
-        for await (const entry of fetchSessionEntries({ apiKey, agentId, sessionId: s.id, model })) {
-          if (entry.id && seenIds.has(entry.id)) continue;
-          if (entry.id) seenIds.add(entry.id);
-          const written = await logger.write(entry);
-          fresh.push(written);
-          if (entry.action_type === 'state_transition'
-              && entry.output?.scope === 'session'
-              && entry.output?.state === 'terminated') sawTerminated = true;
-        }
-      } catch (e) { warn(`session ${s.id}: fetch failed: ${e.message}`); continue; }
+    for (const ag of agents) {
+      if (ac.signal.aborted) break;
+      const tag = fleet ? `[${ag.displayName}] ` : '';
+      let sessions = [];
+      try { sessions = await listSessions(apiKey, { agentId: ag.agentId, since }); }
+      catch (e) { warn(`${tag}listSessions failed: ${e.message}`); continue; }
 
-      if (fresh.length === 0) continue;
-      cycleNew += fresh.length;
-      info(`session ${s.id.slice(0, 16)}…: +${fresh.length} new event(s)`);
+      for (const s of sessions) {
+        if (!s.id || ended.has(s.id)) continue;
+        let logger = loggers.get(s.id);
+        if (!logger) { logger = new Logger({ logDir, agentId: ag.agentId, sessionId: s.id, silent: true }); loggers.set(s.id, logger); }
 
-      if (uploadCtx) {
+        const fresh = [];
+        let sawTerminated = false;
         try {
-          const resp = await uploadSignals(uploadCtx, agentId, displayName, fresh);
-          if (resp?.signal_id) info(`  ↑ signals uploaded (signal_id ${resp.signal_id})`);
-        } catch (e) { warn(`  signals upload failed: ${e.message}`); }
-      }
+          for await (const entry of fetchSessionEntries({ apiKey, agentId: ag.agentId, sessionId: s.id, model: ag.model })) {
+            if (entry.id && seenIds.has(entry.id)) continue;
+            if (entry.id) seenIds.add(entry.id);
+            const written = await logger.write(entry);
+            fresh.push(written);
+            if (entry.action_type === 'state_transition'
+                && entry.output?.scope === 'session'
+                && entry.output?.state === 'terminated') sawTerminated = true;
+          }
+        } catch (e) { warn(`${tag}session ${s.id.slice(0, 16)}…: fetch failed: ${e.message}`); continue; }
 
-      if (sawTerminated) {
-        const tracker = new TokenTracker();
-        for (const e of fresh) tracker.record(e);
-        const stats = tracker.stats().total;
-        await logger.write({
-          action_type: 'session_end', framework: 'anthropic-managed', status: 'ok', model,
-          session_tokens: { input: stats.input, output: stats.output, cache_read: stats.cache_read, cache_creation: stats.cache_creation, total: stats.sum },
-          session_cost_usd: stats.cost_usd || null,
-        });
-        ended.add(s.id);
-        info(`session ${s.id.slice(0, 16)}… terminated — closed`);
+        if (fresh.length === 0) continue;
+        cycleNew += fresh.length;
+        info(`${tag}session ${s.id.slice(0, 16)}…: +${fresh.length} new event(s)`);
+
+        if (uploadCtx) {
+          try {
+            const resp = await uploadSignals(uploadCtx, ag.agentId, ag.displayName, fresh);
+            if (resp?.signal_id) info(`  ↑ signals uploaded (signal_id ${resp.signal_id})`);
+          } catch (e) { warn(`  signals upload failed: ${e.message}`); }
+        }
+
+        if (sawTerminated) {
+          const tracker = new TokenTracker();
+          for (const e of fresh) tracker.record(e);
+          const stats = tracker.stats().total;
+          await logger.write({
+            action_type: 'session_end', framework: 'anthropic-managed', status: 'ok', model: ag.model,
+            session_tokens: { input: stats.input, output: stats.output, cache_read: stats.cache_read, cache_creation: stats.cache_creation, total: stats.sum },
+            session_cost_usd: stats.cost_usd || null,
+          });
+          ended.add(s.id);
+          info(`${tag}session ${s.id.slice(0, 16)}… terminated — closed`);
+        }
       }
     }
 
@@ -275,10 +285,12 @@ async function main() {
   const logDir = resolve(args['log-dir'] || './watchmyagents-logs');
   const watch = !!args.watch;
   const upload = !!args.upload;
+  const allAgents = !!args['all-agents'];
 
   if (!apiKey) die('error: --api-key or ANTHROPIC_API_KEY required');
-  if (!agentId) die('error: --agent-id required (e.g. agent_01ABC...)');
-  if (!isValidAgentId(agentId)) {
+  if (!allAgents && !agentId) die('error: --agent-id required (or --all-agents for fleet mode)');
+  if (allAgents && !watch) die('error: --all-agents requires --watch (fleet daemon). For a one-shot, target a single --agent-id.');
+  if (agentId && !isValidAgentId(agentId)) {
     die(`error: --agent-id has invalid format (expected "agent_" + alphanumeric, got "${agentId}")`);
   }
   const sessionIdArg = args['session-id'];
@@ -303,18 +315,30 @@ async function main() {
     uploadCtx = { apiKey: wmaKey, salt, url: fortressEndpoint(base, 'ingest-signals') };
   }
 
-  info(`resolving agent ${agentId}…`);
-  const agent = await getAgent(apiKey, agentId).catch((e) => die(`failed to GET agent: ${e.message}`));
-  const model = resolveModel(agent);
-  const displayName = agent.name || agentId;
-  info(`model: ${model || '(unknown)'}`);
+  // Resolve the agent list: the whole fleet (--all-agents) or a single agent.
+  let agents;
+  if (allAgents) {
+    info('discovering agents (fleet mode)…');
+    const all = await listAgents(apiKey).catch((e) => die(`failed to list agents: ${e.message}`));
+    agents = all
+      .filter((a) => a.id && isValidAgentId(a.id))
+      .map((a) => ({ agentId: a.id, model: resolveModel(a), displayName: a.name || a.id }));
+    if (agents.length === 0) die('error: no agents found under this API key');
+    info(`fleet: ${agents.length} agent(s) — ${agents.map((a) => a.displayName).join(', ')}`);
+  } else {
+    info(`resolving agent ${agentId}…`);
+    const agent = await getAgent(apiKey, agentId).catch((e) => die(`failed to GET agent: ${e.message}`));
+    agents = [{ agentId, model: resolveModel(agent), displayName: agent.name || agentId }];
+    info(`model: ${agents[0].model || '(unknown)'}`);
+  }
 
   if (watch) {
     const intervalMs = parseDurationMs(args.interval, 5 * 60_000);
-    await runWatch({ apiKey, agentId, model, displayName, logDir, intervalMs, uploadCtx });
+    await runWatch({ apiKey, agents, logDir, intervalMs, uploadCtx });
   } else {
     const since = args.since ? parseSince(args.since) : null;
-    await fetchOneShot({ apiKey, agentId, model, logDir, since, sessionId: args['session-id'], dumpRaw: !!args['dump-raw'] });
+    const a = agents[0];
+    await fetchOneShot({ apiKey, agentId: a.agentId, model: a.model, logDir, since, sessionId: args['session-id'], dumpRaw: !!args['dump-raw'] });
   }
 }
 

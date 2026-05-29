@@ -1,0 +1,88 @@
+{
+  "$comment": "WatchMyAgents — typology classifier weights + thresholds (Guardian Core, agent-typology-classification.spec.md §3/§4/§5). INVARIANT: weights and thresholds live HERE, never hardcoded in typology.js ('poids de signature en config, pas en dur'). Calibrate on labelled real traffic. Modèle C: all inputs are anonymized behavioural fractions/flags only.",
+  "version": "0.1.0",
+  "updated_at": "2026-05-29T00:00:00Z",
+
+  "thresholds": {
+    "$comment": "§4 'Seuils par défaut (à calibrer)' + §5 downgrade asymmetry.",
+    "n_events_min": 50,
+    "confidence_min": 0.70,
+    "margin_min": 0.15,
+    "stable_windows": 3,
+    "downgrade_confidence_min": 0.85,
+    "downgrade_windows": 5,
+    "untrusted_modifier_min": 0.1,
+    "sensitive_modifier_min": 0.0,
+    "payment_overlay_min": 0.0,
+    "autonomy_modifier_min": 0.5,
+    "$comment_tie": "§8 conservative tie-break: when |score(top1)-score(top2)| <= tie_epsilon (a near/exact tie between two REAL types with real signal), select the STRICTER of the two rather than falling to the more-permissive generic — 'dans le doute, on reste sur le plus protecteur'. Set to 0 for exact-tie only.",
+    "tie_epsilon": 0.0
+  },
+
+  "confidence_sigmoid": {
+    "$comment": "§4 confidence = sigmoid(a·top1.score + b·margin + c·log(n_events)). All three coefficients live in config; a naive impl that only used top1.score would be wrong.",
+    "a": 4.0,
+    "b": 6.0,
+    "c": 0.6,
+    "bias": -3.5
+  },
+
+  "strictness_rank": {
+    "$comment": "§5 restriction ranking — derived from each template's baseline_policies enforcement severity (isolate>block>require_approval>throttle>monitor>warn). Higher rank = STRICTER. Drives re-classification asymmetry: to a stricter rank = normal threshold; to a looser rank = downgrade gate (conf>=0.85 AND 5 windows). NOT alphabetical.",
+    "devops_infra": 10,
+    "transactional_financial": 9,
+    "workflow_backoffice": 8,
+    "coding": 7,
+    "orchestrator": 6,
+    "browser_web": 5,
+    "personal_assistant": 4,
+    "data_rag": 3,
+    "generic": 2,
+    "customer_facing": 1
+  },
+
+  "features": {
+    "$comment": "Canonical anonymized feature keys (Modèle C). Fractions f_* in [0,1]; flag_* in {0,1}; aux_* in [0,1]. Order is informational only — scoring is key-addressed.",
+    "fractions": ["f_code", "f_browser", "f_database", "f_http", "f_email", "f_payment", "f_secret", "f_search", "f_memory", "f_handoff", "f_user_msg", "f_file"],
+    "flags": ["flag_deploy", "flag_internal_sys", "flag_on_behalf"],
+    "aux": ["aux_autonomy", "aux_untrusted", "aux_sensitive"]
+  },
+
+  "weights": {
+    "$comment": "w[type][feature] — signature weights (§3). Positive = signal for the type; negative = signal against. flag_* are the REQUIRED discriminators for the 3 inseparable pairs (coding/devops, data_rag/workflow, personal_assistant/workflow). 'generic' has no positive weights (pure fallback).",
+
+    "coding": {
+      "f_code": 1.0, "f_file": 0.5, "f_search": 0.3, "f_secret": 0.1,
+      "flag_deploy": -0.9
+    },
+    "devops_infra": {
+      "f_code": 0.7, "f_secret": 0.6, "f_file": 0.2,
+      "flag_deploy": 1.2
+    },
+    "data_rag": {
+      "f_database": 0.8, "f_search": 0.35, "f_memory": 0.7, "aux_untrusted": 0.2,
+      "flag_internal_sys": -0.7
+    },
+    "customer_facing": {
+      "f_user_msg": 1.0, "f_handoff": 0.3, "f_email": 0.2
+    },
+    "browser_web": {
+      "f_browser": 1.0, "f_http": 0.6, "f_search": 0.7
+    },
+    "orchestrator": {
+      "f_handoff": 1.2, "f_code": -0.2, "f_browser": -0.2, "f_database": -0.2
+    },
+    "workflow_backoffice": {
+      "f_database": 0.6, "f_http": 0.5, "f_file": 0.2,
+      "flag_internal_sys": 0.9, "flag_on_behalf": -0.6
+    },
+    "personal_assistant": {
+      "f_email": 0.8, "f_file": 0.4, "f_user_msg": 0.3,
+      "flag_on_behalf": 1.0
+    },
+    "transactional_financial": {
+      "f_payment": 1.5
+    },
+    "generic": {}
+  }
+}

@@ -33,7 +33,7 @@ import {
   getAgentConfig, detectAlwaysAsk,
 } from '../src/shield/enforce.js';
 import { DecisionLogger } from '../src/shield/decisions.js';
-import { listSessions } from '../src/sources/anthropic-managed.js';
+import { listSessions, listAgents } from '../src/sources/anthropic-managed.js';
 import { FortressPolicySource, postDecision } from '../src/shield/sources/fortress.js';
 import { resolveFortressBase } from '../src/fortress/url.js';
 import { isValidAgentId, isValidSessionId } from '../src/validate.js';
@@ -423,10 +423,15 @@ async function main() {
     explicitUrl: args['fortress-url'],
   });
   const logDir = resolve(args['log-dir'] || './watchmyagents-logs');
+  const allAgents = !!args['all-agents'];
 
   if (!apiKey) die('error: --api-key or ANTHROPIC_API_KEY required');
-  if (!agentId) die('error: --agent-id required');
-  if (!isValidAgentId(agentId)) {
+  if (!allAgents && !agentId) die('error: --agent-id required (or --all-agents for fleet mode)');
+  if (allAgents && singleSessionId) die('error: --all-agents is incompatible with --session-id');
+  if (allAgents && policiesSource !== 'fortress') {
+    die('error: --all-agents requires --policies-source fortress (per-agent policies).');
+  }
+  if (agentId && !isValidAgentId(agentId)) {
     die(`error: --agent-id has invalid format (expected "agent_" + alphanumeric, got "${agentId}")`);
   }
   // --session-id ends up in the Anthropic SSE URL path (src/shield/stream.js).
@@ -435,120 +440,106 @@ async function main() {
     die(`error: --session-id has invalid format (expected "sesn_" + alphanumeric, got "${singleSessionId}")`);
   }
 
-  // Policies source: --policies-source fortress | local  (default infers from --policy)
-  let ruleset;          // for 'local' mode: static; for 'fortress': initial snapshot
-  let fortressPolicies; // FortressPolicySource instance, used as ground truth at runtime
-
+  // Validate the policy source config once (shared across the fleet). For local
+  // mode the ruleset is loaded once and shared by every agent.
+  let sharedLocalRuleset = null;
   if (policiesSource === 'fortress') {
     if (!wmaApiKey) die('error: --policies-source fortress requires --wma-api-key or WMA_API_KEY env');
     if (!fortressBase) die('error: --policies-source fortress requires --fortress-base-url or WMA_FORTRESS_BASE_URL env');
     if (!/^wma_[a-f0-9]{32}$/i.test(wmaApiKey)) warn(`WMA_API_KEY format looks unusual (expected wma_<32hex>).`);
-
-    fortressPolicies = new FortressPolicySource({
-      apiKey: wmaApiKey,
-      base: fortressBase,
-      anthropicAgentId: agentId,
-      refreshIntervalMs: 5 * 60_000,
-      onError: (e) => warn(`policy refresh failed (keeping cached): ${e.message}`),
-      onRefresh: ({ policies, fetched_at, initial }) => {
-        info(`policies ${initial ? 'loaded' : 'refreshed'} from Fortress — ${policies.length} active (fetched_at: ${fetched_at})`);
-      },
-    });
-    try {
-      await fortressPolicies.start();
-    } catch (e) {
-      die(`error fetching policies from Fortress: ${e.message}\n` +
-          `       Check WMA_FORTRESS_BASE_URL and WMA_API_KEY.`);
-    }
-    ruleset = fortressPolicies.current();
   } else if (policiesSource === 'local') {
     if (!policyPath) die('error: --policies-source local requires --policy <path-to-policies.json>');
-    try {
-      ruleset = await loadPolicies(resolve(policyPath));
-    } catch (e) {
-      die(`error loading policies: ${e.message}`);
-    }
+    try { sharedLocalRuleset = await loadPolicies(resolve(policyPath)); }
+    catch (e) { die(`error loading policies: ${e.message}`); }
   } else {
     die('error: --policy <path> OR --policies-source fortress required');
   }
 
-  let mode = 'interrupt';
-  let agentMeta = null;
-  try {
-    agentMeta = await getAgentConfig(apiKey, agentId);
-    if (detectAlwaysAsk(agentMeta)) mode = 'tool_confirmation';
-  } catch (e) {
-    warn(`could not fetch agent config (${e.message}). Defaulting to interrupt mode.`);
+  // Resolve the agent list: whole fleet (--all-agents) or a single agent.
+  let agentIds;
+  if (allAgents) {
+    info('discovering agents (fleet mode)…');
+    const all = await listAgents(apiKey).catch((e) => die(`failed to list agents: ${e.message}`));
+    agentIds = all.map((a) => a.id).filter((id) => id && isValidAgentId(id));
+    if (agentIds.length === 0) die('error: no agents found under this API key');
+    info(`fleet: ${agentIds.length} agent(s)`);
+  } else {
+    agentIds = [agentId];
   }
+  const fleet = agentIds.length > 1;
 
-  const sourceLabel = policiesSource === 'fortress'
-    ? `Fortress (${fortressBase})`
-    : policyPath;
-  info(`armed — ${ruleset.policies.length} policies loaded from ${sourceLabel}`);
-  info(`default action when no rule matches: ${ruleset.default.action}`);
-  info(`agent: ${agentId}${agentMeta?.name ? ` "${agentMeta.name}"` : ''}`);
-  info(`enforcement mode: ${mode}`);
-  if (mode === 'interrupt') {
-    warn('DEGRADED mode — Shield will interrupt AFTER a violating tool runs.');
-    warn(`For pre-execution blocking, run: wma-shield --setup-guide --agent-id ${agentId}`);
-  }
-
-  // Per-session DecisionLogger factory (each session gets its own to keep
-  // sequence numbers monotonic per session).
-  const loggers = new Map();
-  const decisions = (sessionId) => {
-    if (!loggers.has(sessionId)) {
-      loggers.set(sessionId, new DecisionLogger({ logDir, agentId, sessionId }));
-    }
-    return loggers.get(sessionId);
+  // Shared infra: one shutdown signal, one fortress-source registry, one pusher.
+  const ac = new AbortController();
+  const fortressSources = [];
+  const shutdown = (sig) => {
+    info(`${sig} received, shutting down…`);
+    for (const fp of fortressSources) fp.stop();
+    ac.abort();
   };
+  process.on('SIGINT',  () => shutdown('SIGINT'));
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
 
-  // Optional Fortress decision pusher — only active if we have a wma key + base.
-  // In 'fortress' mode this is always available. In 'local' mode it's a fire-
-  // and-forget extra channel if both are set.
+  // Optional Fortress decision pusher (each ctx carries its own agent id, so a
+  // single shared pusher tags decisions with the right agent).
   const canPushToFortress = !!(wmaApiKey && fortressBase);
   const pushDecisionToFortress = canPushToFortress
     ? async (decisionData) => {
-        try {
-          await postDecision({ apiKey: wmaApiKey, base: fortressBase, decision: decisionData });
-        } catch (e) {
-          warn(`Fortress decision push failed: ${e.message}`);
-        }
+        try { await postDecision({ apiKey: wmaApiKey, base: fortressBase, decision: decisionData }); }
+        catch (e) { warn(`Fortress decision push failed: ${e.message}`); }
       }
     : null;
 
-  const ac = new AbortController();
-  process.on('SIGINT',  () => {
-    info('SIGINT received, shutting down…');
-    if (fortressPolicies) fortressPolicies.stop();
-    ac.abort();
-  });
-  process.on('SIGTERM', () => {
-    info('SIGTERM received, shutting down…');
-    if (fortressPolicies) fortressPolicies.stop();
-    ac.abort();
-  });
+  // Per-agent setup + run. In fleet mode these run concurrently; a per-agent
+  // startup failure is skipped (warn) rather than killing the whole fleet.
+  async function startAgent(aid) {
+    const tag = fleet ? `[${aid.slice(0, 16)}…] ` : '';
+    let fortressPolicies = null;
+    let ruleset = sharedLocalRuleset;
+    if (policiesSource === 'fortress') {
+      fortressPolicies = new FortressPolicySource({
+        apiKey: wmaApiKey, base: fortressBase, anthropicAgentId: aid, refreshIntervalMs: 5 * 60_000,
+        onError: (e) => warn(`${tag}policy refresh failed (keeping cached): ${e.message}`),
+        onRefresh: ({ policies, fetched_at, initial }) => info(`${tag}policies ${initial ? 'loaded' : 'refreshed'} from Fortress — ${policies.length} active (fetched_at: ${fetched_at})`),
+      });
+      try { await fortressPolicies.start(); }
+      catch (e) {
+        if (fleet) { warn(`${tag}skipped — policy fetch failed: ${e.message}`); return; }
+        die(`error fetching policies from Fortress: ${e.message}\n       Check WMA_FORTRESS_BASE_URL and WMA_API_KEY.`);
+      }
+      fortressSources.push(fortressPolicies);
+      ruleset = fortressPolicies.current();
+    }
 
-  // ctx exposes a getter for the live ruleset so workers see policy refreshes.
-  const ctx = {
-    apiKey,
-    agentId,
-    get ruleset() {
-      return fortressPolicies ? fortressPolicies.current() : ruleset;
-    },
-    mode,
-    decisions,
-    pushDecisionToFortress,
-    signalsSalt,
-    signal: ac.signal,
-  };
+    let mode = 'interrupt';
+    let agentMeta = null;
+    try { agentMeta = await getAgentConfig(apiKey, aid); if (detectAlwaysAsk(agentMeta)) mode = 'tool_confirmation'; }
+    catch (e) { warn(`${tag}could not fetch agent config (${e.message}). Defaulting to interrupt mode.`); }
 
-  if (singleSessionId) {
-    info(`single-session mode — attached to ${singleSessionId}`);
-    await runSessionWorker({ sessionId: singleSessionId, ctx });
-  } else {
-    await runAgentWide(ctx);
+    info(`${tag}armed — ${ruleset.policies.length} policies · default ${ruleset.default.action} · mode ${mode}${agentMeta?.name ? ` · "${agentMeta.name}"` : ''}`);
+    if (mode === 'interrupt' && !fleet) {
+      warn('DEGRADED mode — Shield will interrupt AFTER a violating tool runs.');
+      warn(`For pre-execution blocking, run: wma-shield --setup-guide --agent-id ${aid}`);
+    }
+
+    const loggers = new Map();
+    const decisions = (sessionId) => {
+      if (!loggers.has(sessionId)) loggers.set(sessionId, new DecisionLogger({ logDir, agentId: aid, sessionId }));
+      return loggers.get(sessionId);
+    };
+    const ctx = {
+      apiKey, agentId: aid,
+      get ruleset() { return fortressPolicies ? fortressPolicies.current() : ruleset; },
+      mode, decisions, pushDecisionToFortress, signalsSalt, signal: ac.signal,
+    };
+
+    if (singleSessionId) {
+      info(`single-session mode — attached to ${singleSessionId}`);
+      return runSessionWorker({ sessionId: singleSessionId, ctx });
+    }
+    return runAgentWide(ctx);
   }
+
+  await Promise.all(agentIds.map(startAgent));
 }
 
 main().catch(e => {

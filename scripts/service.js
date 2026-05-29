@@ -251,9 +251,10 @@ function linuxUninstallOne(label) {
 
 // ── Commands ────────────────────────────────────────────────────────────--
 function cmdInstall(args) {
+  const allAgents = !!args['all-agents'];
   const agentId = args['agent-id'];
-  if (!agentId) die('--agent-id required (e.g. agent_01ABC...)');
-  if (!isValidAgentId(agentId)) die(`--agent-id invalid format (expected "agent_" + alphanumeric, got "${agentId}")`);
+  if (!allAgents && !agentId) die('--agent-id required (or --all-agents to cover the whole fleet)');
+  if (agentId && !isValidAgentId(agentId)) die(`--agent-id invalid format (expected "agent_" + alphanumeric, got "${agentId}")`);
   const interval = args.interval || '5m';
   if (!/^\d+[smhd]$/.test(interval)) die(`--interval invalid format (expected like 30s, 5m, 1h, 2d; got "${interval}")`);
   const logDir = args['log-dir'] || LOG_DIR_DEFAULT;
@@ -262,14 +263,15 @@ function cmdInstall(args) {
   if (PLATFORM !== 'darwin' && PLATFORM !== 'linux') {
     die(`unsupported platform "${PLATFORM}". Supported: macOS (launchd), Linux (systemd).\n` +
         '       Run the daemon manually or wrap it in your own process manager:\n' +
-        `         wma-fetch --agent-id ${agentId} --watch --upload --interval ${interval}`);
+        `         wma-fetch ${allAgents ? '--all-agents' : `--agent-id ${agentId}`} --watch --upload --interval ${interval}`);
   }
 
   mkdirSync(logDir, { recursive: true, mode: 0o700 });
   writeEnvFile();
 
-  const watchArgs = ['--agent-id', agentId, '--watch', '--upload', '--interval', interval, '--log-dir', logDir];
-  const shieldArgs = ['--agent-id', agentId, '--policies-source', 'fortress', '--log-dir', logDir];
+  const target = allAgents ? ['--all-agents'] : ['--agent-id', agentId];
+  const watchArgs = [...target, '--watch', '--upload', '--interval', interval, '--log-dir', logDir];
+  const shieldArgs = [...target, '--policies-source', 'fortress', '--log-dir', logDir];
 
   if (PLATFORM === 'darwin') {
     macInstallOne(WATCH_LABEL, FETCH_SCRIPT, watchArgs);

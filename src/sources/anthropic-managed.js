@@ -77,6 +77,24 @@ export async function getAgent(apiKey, agentId) {
   return getWithRetry(apiKey, `/v1/agents/${agentId}`);
 }
 
+// List every Managed Agent under the API key (paginated). Used for fleet mode
+// (watch/shield/service --all-agents) and agent discovery.
+export async function listAgents(apiKey, { limit = 100 } = {}) {
+  const agents = [];
+  let after = null;
+  while (true) {
+    const qs = new URLSearchParams({ limit: String(limit) });
+    if (after) qs.set('after_id', after);
+    const data = await getWithRetry(apiKey, `/v1/agents?${qs}`);
+    const page = data.data || [];
+    for (const a of page) agents.push(a);
+    if (!data.has_more || page.length === 0) break;
+    after = page[page.length - 1]?.id;
+    if (!after) break;
+  }
+  return agents;
+}
+
 export async function listSessions(apiKey, { agentId, since, limit = 100 } = {}) {
   const sessions = [];
   let after = null;
