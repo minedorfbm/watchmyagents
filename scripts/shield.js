@@ -489,9 +489,10 @@ async function main() {
       }
     : null;
 
-  // Per-agent setup + run. In fleet mode these run concurrently; a per-agent
-  // startup failure is skipped (warn) rather than killing the whole fleet.
-  async function startAgent(aid) {
+  // Per-agent SETUP (separate from the long-running phase so we can COUNT how
+  // many actually armed). In fleet mode a per-agent startup failure is skipped
+  // (warn) instead of killing the fleet. Returns the agent's ctx, or null if skipped.
+  async function setupAgent(aid) {
     const tag = fleet ? `[${aid.slice(0, 16)}…] ` : '';
     let fortressPolicies = null;
     let ruleset = sharedLocalRuleset;
@@ -503,7 +504,7 @@ async function main() {
       });
       try { await fortressPolicies.start(); }
       catch (e) {
-        if (fleet) { warn(`${tag}skipped — policy fetch failed: ${e.message}`); return; }
+        if (fleet) { warn(`${tag}skipped — policy fetch failed: ${e.message}`); return null; }
         die(`error fetching policies from Fortress: ${e.message}\n       Check WMA_FORTRESS_BASE_URL and WMA_API_KEY.`);
       }
       fortressSources.push(fortressPolicies);
@@ -526,20 +527,25 @@ async function main() {
       if (!loggers.has(sessionId)) loggers.set(sessionId, new DecisionLogger({ logDir, agentId: aid, sessionId }));
       return loggers.get(sessionId);
     };
-    const ctx = {
+    return {
       apiKey, agentId: aid,
       get ruleset() { return fortressPolicies ? fortressPolicies.current() : ruleset; },
       mode, decisions, pushDecisionToFortress, signalsSalt, signal: ac.signal,
     };
-
-    if (singleSessionId) {
-      info(`single-session mode — attached to ${singleSessionId}`);
-      return runSessionWorker({ sessionId: singleSessionId, ctx });
-    }
-    return runAgentWide(ctx);
   }
 
-  await Promise.all(agentIds.map(startAgent));
+  // Phase 1: arm every agent. Fail LOUD if none armed (otherwise the process would
+  // exit silently and — under launchd/systemd — restart-loop without a clear cause).
+  const ctxs = (await Promise.all(agentIds.map(setupAgent))).filter(Boolean);
+  if (ctxs.length === 0) {
+    die(`error: no agents could be armed (${agentIds.length} discovered; all policy fetches failed). Check WMA_API_KEY / WMA_FORTRESS_BASE_URL.`);
+  }
+  if (fleet) info(`armed ${ctxs.length}/${agentIds.length} agent(s); watching.`);
+
+  // Phase 2: run each agent's loop (blocks until SIGINT/SIGTERM).
+  await Promise.all(ctxs.map((ctx) => (
+    singleSessionId ? runSessionWorker({ sessionId: singleSessionId, ctx }) : runAgentWide(ctx)
+  )));
 }
 
 main().catch(e => {

@@ -70,6 +70,9 @@ function parseSince(s) {
 function die(msg, code = 1) { process.stderr.write(`${msg}\n`); process.exit(code); }
 function info(msg) { process.stdout.write(`[wma-fetch] ${msg}\n`); }
 function warn(msg) { process.stderr.write(`[wma-fetch] ⚠️  ${msg}\n`); }
+// Strip control chars + truncate a customer-set agent name before it goes into
+// a log line or the Fortress display_name (defense-in-depth vs log/payload injection).
+function cleanLabel(s) { return [...String(s ?? '')].filter((c) => c.charCodeAt(0) >= 32 && c.charCodeAt(0) !== 127).join('').slice(0, 60).trim(); }
 
 function resolveModel(agent) {
   const raw = agent.model || agent.config?.model || null;
@@ -322,13 +325,13 @@ async function main() {
     const all = await listAgents(apiKey).catch((e) => die(`failed to list agents: ${e.message}`));
     agents = all
       .filter((a) => a.id && isValidAgentId(a.id))
-      .map((a) => ({ agentId: a.id, model: resolveModel(a), displayName: a.name || a.id }));
+      .map((a) => ({ agentId: a.id, model: resolveModel(a), displayName: cleanLabel(a.name || a.id) }));
     if (agents.length === 0) die('error: no agents found under this API key');
     info(`fleet: ${agents.length} agent(s) — ${agents.map((a) => a.displayName).join(', ')}`);
   } else {
     info(`resolving agent ${agentId}…`);
     const agent = await getAgent(apiKey, agentId).catch((e) => die(`failed to GET agent: ${e.message}`));
-    agents = [{ agentId, model: resolveModel(agent), displayName: agent.name || agentId }];
+    agents = [{ agentId, model: resolveModel(agent), displayName: cleanLabel(agent.name || agentId) }];
     info(`model: ${agents[0].model || '(unknown)'}`);
   }
 
