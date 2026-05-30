@@ -4,10 +4,15 @@ import { randomUUID } from 'node:crypto';
 import { assertSafePathSegment } from './validate.js';
 
 // PR-B: `framework` → `provider` (canonical name per src/sources/contract.js).
+// PR-C: adds `parent_agent_id` + `composition_pattern` so any future
+// adapter that knows the hierarchy (OpenAI Agents handoffs, CrewAI
+// manager, Hermes Agent spawn_subagent, LangGraph sub-graphs) can
+// thread the relationship through to Fortress without rework.
 // NDJSON written before PR-B may carry `framework`; readers that need the
 // provider tag should read `provider` first and fall back to `framework`.
 const EXPORT_FIELDS = [
-  'id', 'agent_id', 'provider', 'timestamp', 'action_type',
+  'id', 'agent_id', 'parent_agent_id', 'composition_pattern',
+  'provider', 'timestamp', 'action_type',
   'tool_name', 'duration_ms', 'tokens_used',
   'input_tokens', 'output_tokens', 'cache_read_tokens', 'cache_creation_tokens',
   'cost_usd', 'model',
@@ -50,6 +55,11 @@ export class Logger {
     const full = {
       id: e.id || randomUUID(),
       agent_id: this.agentId,
+      // PR-C: sub-agent fields. Defaults are honest for solo / root agents.
+      // An adapter that detects hierarchy (e.g. OpenAI Agents handoffs)
+      // populates these on the event, and the Logger threads them through.
+      parent_agent_id: e.parent_agent_id ?? null,
+      composition_pattern: e.composition_pattern || 'solo',
       provider: e.provider || e.framework || 'generic',
       timestamp: e.timestamp || new Date().toISOString(),
       action_type: e.action_type || 'tool_call',

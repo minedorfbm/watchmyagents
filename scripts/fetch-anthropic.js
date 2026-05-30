@@ -115,6 +115,17 @@ async function uploadSignals(uploadCtx, agentId, displayName, entries, classific
   for (const e of entries) agg.add(e);
   const sig = agg.finalize();
   if (!sig.window_start || !sig.window_end) return null; // nothing datable to ship
+  // PR-C: derive the agent's composition pattern + parent from the
+  // observed entries. For Anthropic today, the Source yields solo/root
+  // agents — sub-agent detection from thread_message_* events lands
+  // with PR-D or a follow-up. Once a future adapter populates these on
+  // the events themselves, this carries them up to Fortress without
+  // any payload-shape change.
+  const firstWithHierarchy = entries.find((e) => e.parent_agent_id != null);
+  const parent_agent_id = firstWithHierarchy?.parent_agent_id ?? null;
+  const composition_pattern = firstWithHierarchy?.composition_pattern
+    || entries.find((e) => e.composition_pattern && e.composition_pattern !== 'solo')?.composition_pattern
+    || 'solo';
   // PR-B: payload carries the canonical provider-agnostic identifiers
   // (`provider` + `native_agent_id`) AND the legacy `anthropic_agent_id`
   // so old Fortress instances still recognize the upload. Once the
@@ -124,6 +135,8 @@ async function uploadSignals(uploadCtx, agentId, displayName, entries, classific
     provider: 'anthropic-managed',
     native_agent_id: agentId,
     anthropic_agent_id: agentId,
+    parent_agent_id,
+    composition_pattern,
     display_name: displayName,
     window_start: sig.window_start,
     window_end: sig.window_end,

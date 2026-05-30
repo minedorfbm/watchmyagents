@@ -178,10 +178,16 @@ async function main() {
   }
 
   // PR-B: provider-agnostic identifiers + legacy fallback (see fetch-anthropic.js).
+  // PR-C: ship the agent's hierarchy + composition pattern. wma-upload-fortress
+  // is a one-shot post-hoc tool — it has no per-entry context to derive
+  // hierarchy from, so it sends defaults (solo / null) until a future
+  // adapter writes those fields into the local NDJSON.
   const body = {
     provider: 'anthropic-managed',
     native_agent_id: agentId,
     anthropic_agent_id: agentId,
+    parent_agent_id: null,
+    composition_pattern: 'solo',
     display_name: displayName,
     window_start: signals.window_start,
     window_end: signals.window_end,
