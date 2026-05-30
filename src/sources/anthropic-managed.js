@@ -17,6 +17,7 @@
 
 import { request } from 'node:https';
 import { URLSearchParams } from 'node:url';
+import { Source, PROVIDERS, ENFORCEMENT_MODES } from './contract.js';
 
 const API_HOST = 'api.anthropic.com';
 const BETA = 'managed-agents-2026-04-01';
@@ -163,7 +164,15 @@ export async function* fetchSessionEntries({ apiKey, agentId, sessionId, model }
   const pendingModelReq = new Map();    // span.model_request_start.id → ts
   const pendingToolUse = new Map();     // agent.tool_use.id → { ts, name, isMcp, input }
 
-  const base = { framework: 'anthropic-managed', agent_id: agentId, session_id: sessionId };
+  // `framework` kept for backwards compat with NDJSON written before PR-A;
+  // `provider` is the canonical field per src/sources/contract.js. PR-B
+  // drops `framework` everywhere once consumers have migrated.
+  const base = {
+    framework: 'anthropic-managed',
+    provider: PROVIDERS.ANTHROPIC_MANAGED,
+    agent_id: agentId,
+    session_id: sessionId,
+  };
 
   // No server-side `types[]` filter: the API rejects unknown values, but the
   // exact filterable set is undocumented & evolves. We pull everything and
@@ -458,4 +467,71 @@ function extractText(content) {
   }
   if (content && typeof content === 'object') return content.text || JSON.stringify(content);
   return '';
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// AnthropicManagedSource — V1 Source contract wrapper
+// ────────────────────────────────────────────────────────────────────────
+// Implements the Source ABC over the low-level functions above. New SDK
+// code should use this class; the function exports stay public for
+// backwards compat with the existing wma-fetch + wma-shield daemons
+// (migration is PR-B / PR-D).
+//
+// Capability declaration:
+//   sync_confirm — Anthropic Managed Agents exposes pre-execution
+//   `user.tool_confirmation` (block before the tool runs) AND
+//   `user.interrupt` (stop the current LLM turn). The stronger of the
+//   two is sync_confirm.
+
+export class AnthropicManagedSource extends Source {
+  static providerName = PROVIDERS.ANTHROPIC_MANAGED;
+  static enforcementMode = ENFORCEMENT_MODES.SYNC_CONFIRM;
+
+  constructor({ apiKey } = {}) {
+    super({ apiKey });
+    if (!apiKey) throw new Error('AnthropicManagedSource requires an apiKey');
+    this.apiKey = apiKey;
+  }
+
+  /**
+   * Discover Managed Agents under this API key. Returns the canonical
+   * agent descriptor (`{ id, name, native }`) — the raw vendor agent
+   * stays in `native` for adapters/UI that want richer metadata.
+   */
+  async listAgents() {
+    const raw = await listAgents(this.apiKey);
+    return raw.map((a) => ({
+      id: a.id,
+      name: a.name || null,
+      native: a,
+    }));
+  }
+
+  /**
+   * Stream WMAAction entries for a session. Anthropic events are
+   * per-session, so opts.sessionId is required — fleet-wide watching is
+   * the caller's job (wma-fetch already orchestrates this).
+   */
+  async *streamEvents(agentId, { sessionId, model } = {}) {
+    if (!sessionId) {
+      throw new Error('AnthropicManagedSource.streamEvents requires opts.sessionId — Anthropic events are scoped to a session');
+    }
+    yield* fetchSessionEntries({
+      apiKey: this.apiKey, agentId, sessionId, model,
+    });
+  }
+
+  /**
+   * Enforce a policy decision against a pending action.
+   *
+   * PR-A scaffold: the actual `user.tool_confirmation` / `user.interrupt`
+   * HTTP call currently lives in scripts/shield.js, which talks to the
+   * Anthropic API directly. Migrating that into this method is PR-D — at
+   * which point this body will POST the decision via the SSE/HTTP control
+   * channel. For PR-A, the method exists to satisfy the contract;
+   * Shield does not call it yet.
+   */
+  async enforce(action, decision) { // eslint-disable-line no-unused-vars
+    throw new Error('AnthropicManagedSource.enforce() — Shield migration pending PR-D (scripts/shield.js still handles enforcement directly)');
+  }
 }
