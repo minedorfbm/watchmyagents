@@ -1,0 +1,153 @@
+// Containment invariant — V1 (PR-E)
+//
+// These tests verify the WMA architectural invariant: no raw payload bytes
+// can escape via the signals payload that ships to Fortress. We inject
+// fixtures with KNOWN secret strings into the SignalsAggregator and then
+// stringify its output to assert the secrets do NOT appear anywhere in
+// the signals — neither in plain text, nor in any field name, nor in any
+// nested structure.
+//
+// A regression that adds a new field carrying raw content flips one of
+// these tests red on the next commit.
+//
+// See: docs/CONTAINMENT.md
+
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { SignalsAggregator, hashWithSalt } from '../src/anonymizer.js';
+
+// Distinctive sentinel strings chosen so a substring match would never
+// false-positive against legitimate signals payload content.
+const SECRET_URL      = 'https://internal.example.com/secret-xyzWKL2026';
+const SECRET_COMMAND  = 'curl -H "Authorization: Bearer SECRETtoken9999" example.com';
+const SECRET_QUERY    = 'SELECT password FROM users WHERE id=42_SECRET_QUERY_MARKER';
+const SECRET_PROMPT   = 'WMA_TEST_SECRET_PROMPT_PLAINTEXT_MARKER';
+const SECRET_OUTPUT   = 'WMA_TEST_SECRET_OUTPUT_CONFIDENTIAL_MARKER';
+const SECRET_ERROR    = 'Could not parse: SECRET_ERROR_BODY_42_MARKER';
+const SECRET_PATH     = '/Users/customer/.ssh/id_rsa_SECRET_PATH_MARKER';
+
+const SALT = 'test-salt-deterministic-1234567890abcdef';
+
+function syntheticEvent(overrides = {}) {
+  return {
+    id: 'evt_synthetic',
+    provider: 'anthropic-managed',
+    agent_id: 'agent_under_test',
+    session_id: 'sess_under_test',
+    timestamp: '2026-05-30T20:00:00Z',
+    status: 'ok',
+    action_type: 'tool_use',
+    tool_name: 'web_fetch',
+    duration_ms: 142,
+    ...overrides,
+  };
+}
+
+// ── Invariant tests ─────────────────────────────────────────────────────
+
+test('Containment: SignalsAggregator output never carries raw input bytes', () => {
+  const agg = new SignalsAggregator({ salt: SALT });
+  agg.add(syntheticEvent({
+    input: {
+      url: SECRET_URL,
+      query: SECRET_QUERY,
+      command: SECRET_COMMAND,
+      path: SECRET_PATH,
+    },
+  }));
+  const out = agg.finalize();
+  const serialized = JSON.stringify(out);
+
+  for (const secret of [SECRET_URL, SECRET_QUERY, SECRET_COMMAND, SECRET_PATH]) {
+    assert.ok(
+      !serialized.includes(secret),
+      `Containment leak: raw input substring "${secret}" found in signals output`,
+    );
+  }
+});
+
+test('Containment: SignalsAggregator output never carries raw prompt/output content', () => {
+  const agg = new SignalsAggregator({ salt: SALT });
+  agg.add(syntheticEvent({
+    action_type: 'user_message',
+    input: { content: SECRET_PROMPT },
+  }));
+  agg.add(syntheticEvent({
+    id: 'evt_2',
+    action_type: 'message',
+    output: { content: SECRET_OUTPUT },
+  }));
+  agg.add(syntheticEvent({
+    id: 'evt_3',
+    status: 'error',
+    error: SECRET_ERROR,
+  }));
+  const out = agg.finalize();
+  const serialized = JSON.stringify(out);
+
+  for (const secret of [SECRET_PROMPT, SECRET_OUTPUT, SECRET_ERROR]) {
+    assert.ok(
+      !serialized.includes(secret),
+      `Containment leak: raw content substring "${secret}" found in signals output`,
+    );
+  }
+});
+
+test('Containment: hashWithSalt is deterministic for the same (value, salt)', () => {
+  const h1 = hashWithSalt(SECRET_URL, SALT);
+  const h2 = hashWithSalt(SECRET_URL, SALT);
+  assert.equal(h1, h2, 'salted hash must be deterministic for same input + salt');
+  assert.ok(h1.startsWith('sha256:'), 'IoC hash should have sha256: prefix');
+  assert.equal(h1.length, 'sha256:'.length + 32, 'hash is sha256: + 32-char prefix');
+});
+
+test('Containment: raw URLs appear as their salted hash in ioc_hashes', () => {
+  const agg = new SignalsAggregator({ salt: SALT });
+  agg.add(syntheticEvent({ input: { url: SECRET_URL } }));
+  const out = agg.finalize();
+  const expected = hashWithSalt(SECRET_URL, SALT);
+  assert.ok(
+    out.payload.ioc_hashes.includes(expected),
+    `Expected hashed IoC ${expected} not found in ioc_hashes`,
+  );
+});
+
+test('Containment: signals payload shape contains only the documented keys', () => {
+  const agg = new SignalsAggregator({ salt: SALT });
+  agg.add(syntheticEvent({
+    input: { url: SECRET_URL },
+    output: { content: SECRET_OUTPUT },
+  }));
+  const out = agg.finalize();
+
+  // Top level: only the envelope and the inner payload + meta. Any new
+  // key here is a Containment review trigger.
+  const allowedTopLevel = new Set(['window_start', 'window_end', 'payload', '_meta']);
+  for (const k of Object.keys(out)) {
+    assert.ok(allowedTopLevel.has(k), `Unexpected top-level signals key: "${k}" — needs Containment review`);
+  }
+
+  // Inside `payload`: the exact set documented in src/anonymizer.js. A
+  // new aggregator output field that carries raw bytes would surface here.
+  const allowedPayloadKeys = new Set([
+    'counts',
+    'tool_counts',
+    'latencies_p50_ms', 'latencies_p95_ms',
+    'error_rate_by_tool',
+    'ioc_hashes',
+    'sequences_top10',
+    'stop_reasons',
+    'tokens_total',
+  ]);
+  for (const k of Object.keys(out.payload)) {
+    assert.ok(
+      allowedPayloadKeys.has(k),
+      `Unexpected payload key: "${k}" — adding fields requires Containment review (docs/CONTAINMENT.md)`,
+    );
+  }
+});
+
+test('Containment: SignalsAggregator refuses to operate without a salt', () => {
+  assert.throws(() => new SignalsAggregator({}), /salt/);
+  assert.throws(() => new SignalsAggregator(), /salt/);
+});
