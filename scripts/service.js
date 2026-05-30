@@ -17,7 +17,7 @@
 // environment) into a protected env file (~/.watchmyagents/env, chmod 600) that
 // the service loads at runtime. Required env at install time:
 //   ANTHROPIC_API_KEY, WMA_API_KEY, WMA_FORTRESS_BASE_URL, WMA_SIGNALS_SALT
-// Raw logs stay local (Modèle C); only anonymized signals are uploaded.
+// Raw logs stay local (Containment); only anonymized signals are uploaded.
 
 import os from 'node:os';
 import { mkdirSync, writeFileSync, rmSync, existsSync, chmodSync } from 'node:fs';

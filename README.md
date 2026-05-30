@@ -129,7 +129,7 @@ Logs land in `./watchmyagents-logs/<agent_id>/<date>.ndjson` (file mode `0600`, 
 
 ### `wma-anonymize` — preview what would leave your machine
 
-Produces the anonymized signals payload (counts, latencies, salted IoC hashes, sequence histograms — no raw URLs/commands/prompts) that future WMA cloud features would ship. Useful to verify Modèle C compliance and to test the format.
+Produces the anonymized signals payload (counts, latencies, salted IoC hashes, sequence histograms — no raw URLs/commands/prompts) that future WMA cloud features would ship. Useful to verify Containment compliance and to test the format.
 
 ```bash
 export WMA_SIGNALS_SALT="$(node -e 'console.log(require("crypto").randomBytes(16).toString("hex"))')"
@@ -174,7 +174,7 @@ Outputs sections aligned with security audit needs: tokens summary, by-tool / by
 
 Lists every Managed Agent under your key and classifies each one's **typology**
 (one of 10 Guardian Core archetypes) from its OBSERVED behaviour in your local
-logs — which drives the cold-start Shield template. Modèle C: reads local logs
+logs — which drives the cold-start Shield template. Containment: reads local logs
 only (tool-category fractions, never raw content) and transmits nothing.
 
 ```bash
@@ -303,7 +303,7 @@ Decisions are logged to the same NDJSON stream as Watch (`action_type: shield_de
 
 - ✅ Watch SDK — Anthropic Managed Agents post-hoc fetch + local audit
 - ✅ Shield SDK — real-time enforcement (interrupt mode + tool_confirmation mode)
-- ✅ Anonymizer — produce signals payloads (Modèle C: no raw content leaves)
+- ✅ Anonymizer — produce signals payloads (Containment: no raw content leaves)
 - ✅ Anonymized telemetry to WMA Fortress cloud (`wma-upload-fortress` in v0.5.0)
 - ✅ Guardian AI (cloud) — automatic policy suggestions from observed behavior
 - ✅ Fortress (cloud) — dashboard + human-in-the-loop validation queue

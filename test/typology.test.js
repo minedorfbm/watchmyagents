@@ -8,7 +8,7 @@
 //   4. hybrid code+browser -> dominant type, the other surfaced (top2 / runner-up)
 //   5. tie -> the stricter type wins (never falls to the more-permissive generic)
 //
-// Also asserts schema conformance of the result shape, Modèle C feature vector
+// Also asserts schema conformance of the result shape, Containment feature vector
 // bounds, the payment overlay, and modifiers.
 
 import { test } from 'node:test';
@@ -258,8 +258,8 @@ test('modifiers: none fire when aux signals are absent/low', () => {
   assert.deepEqual(r.modifiers, []);
 });
 
-// ── Modèle C: feature vector keys are anonymized fractions/flags/aux only. ──
-test('Modele C: feature_vector contains only known anonymized keys, all in [0,1]', () => {
+// ── Containment: feature vector keys are anonymized fractions/flags/aux only. ──
+test('Containment: feature_vector contains only known anonymized keys, all in [0,1]', () => {
   const r = classifyAgentType({ agent_id: 'a', f_code: 0.7, f_file: 0.15, n_events: N, name: 'should-be-ignored' });
   assert.ok(!('name' in r.feature_vector), 'raw name never enters the feature vector');
   for (const v of Object.values(r.feature_vector)) {

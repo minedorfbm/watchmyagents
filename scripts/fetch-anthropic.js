@@ -14,7 +14,7 @@
 //     by the stable Anthropic event id), appends them to the NDJSON, and — with
 //     --upload — anonymizes the new window and ships signals to Fortress. This
 //     automates the Watch leg of the WGS loop so Guardian gets fresh data with
-//     no manual step. The raw NDJSON always stays local (Modèle C).
+//     no manual step. The raw NDJSON always stays local (Containment).
 //
 // API key from --api-key or env ANTHROPIC_API_KEY.
 // --upload also needs: WMA_API_KEY, WMA_FORTRESS_BASE_URL, WMA_SIGNALS_SALT.
@@ -213,7 +213,7 @@ async function fetchOneShot({ apiKey, agentId, model, logDir, since, sessionId, 
 // up. `windowMs` bounds discovery of NEW sessions, but sessions we're ALREADY
 // tracking are re-fetched regardless of age, so a long-running (>window) session
 // never drops out of capture. `sendNames`: include the human agent name in the
-// Fortress display_name (opt-in); default sends the agent id only (Modèle C).
+// Fortress display_name (opt-in); default sends the agent id only (Containment).
 async function runWatch({ apiKey, resolveAgents, fleet, logDir, intervalMs, windowMs, uploadCtx, sendNames }) {
   let agents = await resolveAgents();
   const seenIds = new Set();     // stable Anthropic event ids already captured
@@ -284,7 +284,7 @@ async function runWatch({ apiKey, resolveAgents, fleet, logDir, intervalMs, wind
         try {
           // Compute the agent's typology from its CUMULATIVE local logs and
           // thread the prior across cycles so the state machine refines toward
-          // stable (Modèle C: features = counts/categories only, no raw content).
+          // stable (Containment: features = counts/categories only, no raw content).
           let classification;
           try {
             const features = buildFeatures(await aggregate(logDir, ag.agentId));

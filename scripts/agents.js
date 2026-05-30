@@ -5,14 +5,14 @@
 // Usage:
 //   wma-agents [list] [--log-dir ~/.watchmyagents/logs] [--json]
 //
-// Reads the local Watch logs (NEVER leaves the machine — Modèle C) and derives
+// Reads the local Watch logs (NEVER leaves the machine — Containment) and derives
 // the anonymized behavioural FEATURE VECTOR per the typology spec:
 //   per-tool-category FRACTIONS (f_*), boolean local flags (flag_*), aux ratios
 //   (aux_*), and n_events. It then calls classifyAgentType() and prints the
 //   schema-conformant result. With <50 events an agent is `generic` (cold start)
 //   and refines as activity accumulates.
 //
-// Modèle C invariant: only counts/ratios/flags are computed here — never raw
+// Containment invariant: only counts/ratios/flags are computed here — never raw
 // prompt/output content, never the agent display name. Nothing is transmitted.
 //
 // ANTHROPIC_API_KEY from env (or --api-key, discouraged).
@@ -39,7 +39,7 @@ function die(msg, code = 1) { process.stderr.write(`error: ${msg}\n`); process.e
 function info(msg) { process.stdout.write(`[wma-agents] ${msg}\n`); }
 
 // Feature aggregation lives in src/typology-features.js (shared with the Watch
-// daemon so both CLI snapshot and continuous upload use the same Modèle C
+// daemon so both CLI snapshot and continuous upload use the same Containment
 // extraction). The rest of this file is just CLI presentation.
 
 async function main() {
@@ -76,7 +76,7 @@ async function main() {
   if (asJson) { process.stdout.write(JSON.stringify(results, null, 2) + '\n'); return; }
 
   info(`discovered ${results.length} agent(s) - classified from local logs in ${logDir}`);
-  info(`Modele C: features below default to 0 (logs don't expose them): ${NON_DERIVABLE.join(', ')}`);
+  info(`Containment: features below default to 0 (logs don't expose them): ${NON_DERIVABLE.join(', ')}`);
   process.stdout.write('\n');
   for (const r of results) {
     const mods = (r.modifiers && r.modifiers.length) ? ` [+${r.modifiers.join(',')}]` : '';

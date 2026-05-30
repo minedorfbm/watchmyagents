@@ -1,5 +1,5 @@
 {
-  "$comment": "WatchMyAgents — typology classifier weights + thresholds (Guardian Core, agent-typology-classification.spec.md §3/§4/§5). INVARIANT: weights and thresholds live HERE, never hardcoded in typology.js ('poids de signature en config, pas en dur'). Calibrate on labelled real traffic. Modèle C: all inputs are anonymized behavioural fractions/flags only.",
+  "$comment": "WatchMyAgents — typology classifier weights + thresholds (Guardian Core, agent-typology-classification.spec.md §3/§4/§5). INVARIANT: weights and thresholds live HERE, never hardcoded in typology.js ('poids de signature en config, pas en dur'). Calibrate on labelled real traffic. Containment: all inputs are anonymized behavioural fractions/flags only.",
   "version": "0.1.0",
   "updated_at": "2026-05-29T00:00:00Z",
 
@@ -42,7 +42,7 @@
   },
 
   "features": {
-    "$comment": "Canonical anonymized feature keys (Modèle C). Fractions f_* in [0,1]; flag_* in {0,1}; aux_* in [0,1]. Order is informational only — scoring is key-addressed.",
+    "$comment": "Canonical anonymized feature keys (Containment). Fractions f_* in [0,1]; flag_* in {0,1}; aux_* in [0,1]. Order is informational only — scoring is key-addressed.",
     "fractions": ["f_code", "f_browser", "f_database", "f_http", "f_email", "f_payment", "f_secret", "f_search", "f_memory", "f_handoff", "f_user_msg", "f_file"],
     "flags": ["flag_deploy", "flag_internal_sys", "flag_on_behalf"],
     "aux": ["aux_autonomy", "aux_untrusted", "aux_sensitive"]

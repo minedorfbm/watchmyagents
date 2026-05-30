@@ -8,7 +8,7 @@
 // Why behaviour, not config: Anthropic Managed Agents expose their tools as an
 // opaque bundle (`agent_toolset_20260401`), so static config can't tell a
 // researcher from a coder. We classify from anonymized behavioural signals
-// (Modèle C): per-tool-category FRACTIONS (f_*), boolean local flags (flag_*),
+// (Containment): per-tool-category FRACTIONS (f_*), boolean local flags (flag_*),
 // and aux ratios (aux_*). NEVER raw content — no prompts, no outputs, no names.
 //
 // ──────────────────────────────────────────────────────────────────────────
@@ -23,7 +23,7 @@
 // ──────────────────────────────────────────────────────────────────────────
 //
 // INVARIANTS enforced here:
-//   1. Modèle C — inputs are anonymized fractions/flags/aux ONLY.
+//   1. Containment — inputs are anonymized fractions/flags/aux ONLY.
 //   2. Weights + thresholds come from config (typology-weights.json), never
 //      hardcoded in the logic below.
 //   3. No easy downgrade — moving to a LESS strict template needs a raised
@@ -76,7 +76,7 @@ function strictnessOf(cfg, type) {
  * Build the canonical feature vector from a loose features object.
  * Only the schema-legal keys are kept; everything is coerced to a number and
  * clamped to [0,1] (the schema requires every feature_vector value in [0,1]).
- * Missing features default to 0 — Modèle C: an absent signal is "not observed",
+ * Missing features default to 0 — Containment: an absent signal is "not observed",
  * never inferred from content.
  */
 function normalizeFeatures(cfg, features) {
@@ -121,7 +121,7 @@ function rankTypes(cfg, fv) {
  * classifyAgentType(features[, prior][, opts]) → object conforming EXACTLY to
  * agent-classification.schema.json.
  *
- * @param {object} features          Anonymized behavioural signals (Modèle C):
+ * @param {object} features          Anonymized behavioural signals (Containment):
  *   agent_id            {string}    pass-through identifier (no content)
  *   f_code,f_browser,…  {number}    per-category FRACTIONS in [0,1]
  *   flag_deploy,…       {0|1|bool}  local discriminator flags (no content)

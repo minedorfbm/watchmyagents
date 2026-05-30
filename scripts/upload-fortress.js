@@ -4,7 +4,7 @@
 //
 // Composable with the rest of the SDK:
 //   wma-fetch  →  ./watchmyagents-logs/<agent_id>/<date>.ndjson   (local capture)
-//   wma-anonymize  →  signals payload (Modèle C: no raw content)
+//   wma-anonymize  →  signals payload (Containment: no raw content)
 //   wma-upload-fortress  →  POST signals to https://<project>.supabase.co/functions/v1/ingest-signals
 //
 // Usage:

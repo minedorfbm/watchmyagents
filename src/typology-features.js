@@ -1,9 +1,9 @@
-// Shared local-log feature extraction for the typology classifier (Modèle C).
+// Shared local-log feature extraction for the typology classifier (Containment).
 // Both wma-agents (CLI snapshot) and the Watch daemon (continuous upload) use
 // this to derive the anonymized behavioural FEATURE VECTOR from local NDJSON
 // logs, then feed it to classifyAgentType() in ./typology.js.
 //
-// Modèle C invariant: only `action_type` and `tool_name` are read from each log
+// Containment invariant: only `action_type` and `tool_name` are read from each log
 // line — the raw payload fields (input/output/content/error/thinking) are NEVER
 // touched here, so no raw content can ever enter a feature.
 
@@ -37,7 +37,7 @@ const CATEGORY_RULES = [
 const DEPLOY_RE = /deploy|terraform|kubectl|helm|(^|_)release($|_)|ansible|pulumi|cloudformation/;
 
 // Features that the WMA NDJSON logs CANNOT reliably expose today (opaque tool
-// names, no behavioural signal, or raw content off-limits under Modèle C).
+// names, no behavioural signal, or raw content off-limits under Containment).
 // They default to 0/false; callers can surface this to the user.
 export const NON_DERIVABLE = [
   'f_database', 'f_email', 'f_payment', 'f_secret', 'f_memory',
