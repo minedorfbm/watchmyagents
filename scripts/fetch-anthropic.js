@@ -30,6 +30,8 @@ import { TokenTracker } from '../src/tokens.js';
 import { SignalsAggregator } from '../src/anonymizer.js';
 import { resolveFortressBase, fortressEndpoint } from '../src/fortress/url.js';
 import { isValidAgentId, isValidSessionId, assertSafePathSegment } from '../src/validate.js';
+import { classifyAgentType } from '../src/typology.js';
+import { aggregate, buildFeatures } from '../src/typology-features.js';
 import {
   getAgent, listAgents, listSessions, fetchSessionEntries, fetchRawEvents,
 } from '../src/sources/anthropic-managed.js';
@@ -105,7 +107,10 @@ function postJson(url, headers, body) {
 }
 
 // Anonymize a batch of just-written entries and ship them as one signals row.
-async function uploadSignals(uploadCtx, agentId, displayName, entries) {
+// `classification` (optional) carries the agent's typology — Fortress upserts
+// agent_type/confidence/stage on the agent row so the typology badge + the
+// apply-template flow fill themselves with no manual click.
+async function uploadSignals(uploadCtx, agentId, displayName, entries, classification) {
   const agg = new SignalsAggregator({ salt: uploadCtx.salt });
   for (const e of entries) agg.add(e);
   const sig = agg.finalize();
@@ -116,6 +121,7 @@ async function uploadSignals(uploadCtx, agentId, displayName, entries) {
     window_start: sig.window_start,
     window_end: sig.window_end,
     payload: sig.payload,
+    ...(classification ? { classification } : {}),
   });
   const { status, body: resp } = await postJson(
     uploadCtx.url, { authorization: `Bearer ${uploadCtx.apiKey}` }, body,
@@ -217,6 +223,8 @@ async function runWatch({ apiKey, resolveAgents, fleet, logDir, intervalMs, wind
   const loggers = new Map();     // sessionId → Logger (session ids are globally unique)
   const ended = new Set();       // terminated sessions (skip)
   const sessionAgent = new Map();// sessionId → { agentId, model, displayName }
+  const priors = new Map();      // agentId → previous classification (threads the
+                                  // typology state machine across upload cycles)
 
   const ac = new AbortController();
   const shutdown = () => { info('shutting down…'); ac.abort(); };
@@ -274,8 +282,23 @@ async function runWatch({ apiKey, resolveAgents, fleet, logDir, intervalMs, wind
 
       if (uploadCtx) {
         try {
-          const resp = await uploadSignals(uploadCtx, ag.agentId, sendNames ? ag.displayName : ag.agentId, fresh);
-          if (resp?.signal_id) info(`  ↑ signals uploaded (signal_id ${resp.signal_id})`);
+          // Compute the agent's typology from its CUMULATIVE local logs and
+          // thread the prior across cycles so the state machine refines toward
+          // stable (Modèle C: features = counts/categories only, no raw content).
+          let classification;
+          try {
+            const features = buildFeatures(await aggregate(logDir, ag.agentId));
+            features.agent_id = ag.agentId;
+            const cls = classifyAgentType(features, priors.get(ag.agentId) || null);
+            priors.set(ag.agentId, cls);
+            classification = { agent_type: cls.classified_type, confidence: cls.confidence, stage: cls.stage };
+          } catch (e) { warn(`  classification skipped: ${e.message}`); }
+
+          const resp = await uploadSignals(uploadCtx, ag.agentId, sendNames ? ag.displayName : ag.agentId, fresh, classification);
+          if (resp?.signal_id) {
+            const cTag = classification ? ` · type ${classification.agent_type} (${Math.round(classification.confidence * 100)}%, ${classification.stage})` : '';
+            info(`  ↑ signals uploaded (signal_id ${resp.signal_id})${cTag}`);
+          }
         } catch (e) { warn(`  signals upload failed: ${e.message}`); }
       }
 
