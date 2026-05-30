@@ -30,6 +30,7 @@ import { createReadStream } from 'node:fs';
 import { createInterface } from 'node:readline';
 import { SignalsAggregator } from '../src/anonymizer.js';
 import { resolveFortressBase, fortressEndpoint } from '../src/fortress/url.js';
+import { AnthropicManagedSource } from '../src/sources/anthropic-managed.js';
 
 function parseArgs(argv) {
   const out = {};
@@ -182,12 +183,15 @@ async function main() {
   // is a one-shot post-hoc tool — it has no per-entry context to derive
   // hierarchy from, so it sends defaults (solo / null) until a future
   // adapter writes those fields into the local NDJSON.
+  // PR-D: enforcement_mode read from the Source class so any change to
+  // the adapter's capability automatically reflects in the payload.
   const body = {
-    provider: 'anthropic-managed',
+    provider: AnthropicManagedSource.providerName,
     native_agent_id: agentId,
     anthropic_agent_id: agentId,
     parent_agent_id: null,
     composition_pattern: 'solo',
+    enforcement_mode: AnthropicManagedSource.enforcementMode,
     display_name: displayName,
     window_start: signals.window_start,
     window_end: signals.window_end,

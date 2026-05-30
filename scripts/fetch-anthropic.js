@@ -34,6 +34,7 @@ import { classifyAgentType } from '../src/typology.js';
 import { aggregate, buildFeatures } from '../src/typology-features.js';
 import {
   getAgent, listAgents, listSessions, fetchSessionEntries, fetchRawEvents,
+  AnthropicManagedSource,
 } from '../src/sources/anthropic-managed.js';
 
 function parseArgs(argv) {
@@ -131,12 +132,16 @@ async function uploadSignals(uploadCtx, agentId, displayName, entries, classific
   // so old Fortress instances still recognize the upload. Once the
   // Lovable-deployed ingest-signals migrates, future SDK releases will
   // stop emitting `anthropic_agent_id`.
+  // PR-D: enforcement_mode is read CANONICALLY from the Source's static
+  // declaration so it stays in sync with the actual capability of the
+  // adapter — never re-declared inline.
   const body = JSON.stringify({
-    provider: 'anthropic-managed',
+    provider: AnthropicManagedSource.providerName,
     native_agent_id: agentId,
     anthropic_agent_id: agentId,
     parent_agent_id,
     composition_pattern,
+    enforcement_mode: AnthropicManagedSource.enforcementMode,
     display_name: displayName,
     window_start: sig.window_start,
     window_end: sig.window_end,
