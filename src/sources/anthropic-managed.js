@@ -164,11 +164,10 @@ export async function* fetchSessionEntries({ apiKey, agentId, sessionId, model }
   const pendingModelReq = new Map();    // span.model_request_start.id → ts
   const pendingToolUse = new Map();     // agent.tool_use.id → { ts, name, isMcp, input }
 
-  // `framework` kept for backwards compat with NDJSON written before PR-A;
-  // `provider` is the canonical field per src/sources/contract.js. PR-B
-  // drops `framework` everywhere once consumers have migrated.
+  // `provider` is the canonical field per src/sources/contract.js (no
+  // other consumer ever read the previous `framework` field, so it was
+  // dropped in PR-B with zero downstream impact).
   const base = {
-    framework: 'anthropic-managed',
     provider: PROVIDERS.ANTHROPIC_MANAGED,
     agent_id: agentId,
     session_id: sessionId,

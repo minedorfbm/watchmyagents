@@ -115,7 +115,14 @@ async function uploadSignals(uploadCtx, agentId, displayName, entries, classific
   for (const e of entries) agg.add(e);
   const sig = agg.finalize();
   if (!sig.window_start || !sig.window_end) return null; // nothing datable to ship
+  // PR-B: payload carries the canonical provider-agnostic identifiers
+  // (`provider` + `native_agent_id`) AND the legacy `anthropic_agent_id`
+  // so old Fortress instances still recognize the upload. Once the
+  // Lovable-deployed ingest-signals migrates, future SDK releases will
+  // stop emitting `anthropic_agent_id`.
   const body = JSON.stringify({
+    provider: 'anthropic-managed',
+    native_agent_id: agentId,
     anthropic_agent_id: agentId,
     display_name: displayName,
     window_start: sig.window_start,
@@ -194,7 +201,7 @@ async function fetchOneShot({ apiKey, agentId, model, logDir, since, sessionId, 
     }
     const stats = tracker.stats().total;
     await logger.write({
-      action_type: 'session_end', framework: 'anthropic-managed', status: 'ok', model,
+      action_type: 'session_end', provider: 'anthropic-managed', status: 'ok', model,
       session_tokens: { input: stats.input, output: stats.output, cache_read: stats.cache_read, cache_creation: stats.cache_creation, total: stats.sum },
       session_cost_usd: stats.cost_usd || null,
     });
@@ -307,7 +314,7 @@ async function runWatch({ apiKey, resolveAgents, fleet, logDir, intervalMs, wind
         for (const e of fresh) tracker.record(e);
         const stats = tracker.stats().total;
         await logger.write({
-          action_type: 'session_end', framework: 'anthropic-managed', status: 'ok', model: ag.model,
+          action_type: 'session_end', provider: 'anthropic-managed', status: 'ok', model: ag.model,
           session_tokens: { input: stats.input, output: stats.output, cache_read: stats.cache_read, cache_creation: stats.cache_creation, total: stats.sum },
           session_cost_usd: stats.cost_usd || null,
         });

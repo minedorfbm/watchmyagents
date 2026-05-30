@@ -25,7 +25,7 @@ export class DecisionLogger {
   }) {
     return this._logger.write({
       action_type: 'shield_decision',
-      framework: 'anthropic-managed',
+      provider: 'anthropic-managed',
       tool_name: sourceEvent?.name || sourceEvent?.tool_name || null,
       status: decision === 'deny' || decision === 'interrupt' ? 'error' : 'ok',
       error: decision === 'deny' || decision === 'interrupt' ? message : null,

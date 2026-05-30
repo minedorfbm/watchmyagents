@@ -177,7 +177,10 @@ async function main() {
     die('error: no entries had timestamps — nothing to upload');
   }
 
+  // PR-B: provider-agnostic identifiers + legacy fallback (see fetch-anthropic.js).
   const body = {
+    provider: 'anthropic-managed',
+    native_agent_id: agentId,
     anthropic_agent_id: agentId,
     display_name: displayName,
     window_start: signals.window_start,
