@@ -365,7 +365,12 @@ async function main() {
     // Discovery window for NEW sessions (default 7d, configurable). Sessions we
     // already track are re-fetched regardless of age, so long-lived ones don't drop.
     const windowMs = parseDurationMs(args['discovery-since'], 7 * 24 * 3600_000);
-    const sendNames = !!args['send-agent-names'];
+    // display_name on the Fortress payload: defaults to the human agent name
+    // (UX-friendly — operators identify agents by name in the dashboard). The
+    // name is sanitized via cleanLabel() so log/payload injection is impossible.
+    // Use --no-send-agent-names to opt OUT (sends the agent_id instead) for
+    // setups where the agent name itself is considered sensitive metadata.
+    const sendNames = args['no-send-agent-names'] !== true;
 
     let resolveAgents;
     if (allAgents) {

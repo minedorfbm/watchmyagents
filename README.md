@@ -155,7 +155,7 @@ wma-upload-fortress --agent-id agent_01ABC... [--display-name "My agent"]
 wma-upload-fortress --agent-id agent_xxx --dry-run
 ```
 
-**What is sent:** the anonymized signals payload (counts, latencies, salted IoC hashes, sequences — same as `wma-anonymize` output) **plus two routing identifiers**: your `anthropic_agent_id` and a `display_name`. The agent id is required so Fortress can associate signals with the right agent; `display_name` defaults to the agent id and only carries the human-readable agent name if you opt in (`wma-fetch --watch --upload --send-agent-names`).
+**What is sent:** the anonymized signals payload (counts, latencies, salted IoC hashes, sequences — same as `wma-anonymize` output), the agent's **`classification`** when the daemon has it (`{agent_type, confidence, stage}` — anonymized metadata, never raw content), **plus two routing identifiers**: your `anthropic_agent_id` and a `display_name`. The agent id is required so Fortress can associate signals with the right agent; `display_name` defaults to the **human-readable agent name** (sanitized to strip control chars) for UX in the dashboard — pass `--no-send-agent-names` to keep it pseudonymized (sends the agent id instead) if your agent names themselves carry sensitive client/project info.
 **What is NOT sent:** raw prompts, raw URLs/commands/queries, raw agent responses, raw error messages. All payload content stays on your machine.
 
 The endpoint auto-registers the agent on the first upload if it doesn't exist in Fortress yet — no manual onboarding needed for new agents.
