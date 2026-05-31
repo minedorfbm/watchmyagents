@@ -1,6 +1,6 @@
 {
   "name": "watchmyagents",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Security observability + real-time policy enforcement for AI agents. Local-first NDJSON capture with a continuous Watch daemon that auto-uploads anonymized signals, Shield CLI that blocks policy violations live (with policies pulled from Fortress cloud), anonymizer producing signals-only payloads, bidirectional sync with WatchMyAgents Fortress, and one-command install as an always-on launchd/systemd service — closing the recursive Watch→Guardian→Shield security loop.",
   "type": "module",
   "files": [
