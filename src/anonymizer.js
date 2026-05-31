@@ -134,6 +134,13 @@ export class SignalsAggregator {
     this.entryCount = 0;
     this._prevActionType = null;
     this._prevSessionId = null;
+    // v1.0.2 F-6b — opaque session ids active in this window. Shipped to
+    // Fortress in the payload as `session_ids[]` so an operator looking at
+    // a Shield decision in the dashboard can grep their LOCAL NDJSON by
+    // session_id immediately (forensics short-circuit). The Anthropic
+    // session_id is a non-semantic token like `sess_01XaNB…` — same
+    // sensitivity class as `agent_id`, which we already transmit.
+    this.seenSessions = new Set();              // unique session_ids
   }
 
   add(entry) {
@@ -145,6 +152,13 @@ export class SignalsAggregator {
     if (ts) {
       if (!this.windowStart || ts < this.windowStart) this.windowStart = ts;
       if (!this.windowEnd || ts > this.windowEnd) this.windowEnd = ts;
+    }
+
+    // F-6b — collect every distinct session_id encountered in the window.
+    // Stays opaque (no string transformation), bounded by the natural
+    // number of sessions in the window.
+    if (typeof entry.session_id === 'string' && entry.session_id.length > 0) {
+      this.seenSessions.add(entry.session_id);
     }
 
     // Counts
@@ -233,6 +247,11 @@ export class SignalsAggregator {
         sequences_top10: sequencesTop,
         stop_reasons: this.stopReasons,
         tokens_total: this.tokensTotal,
+        // F-6c — opaque session ids active in this window, sorted for
+        // determinism. Operator forensic chain:
+        //   Fortress decision → window_start/end + session_ids → grep
+        //   the local NDJSON of the affected agent → full raw context.
+        session_ids: [...this.seenSessions].sort(),
       },
       _meta: {
         entries_processed: this.entryCount,

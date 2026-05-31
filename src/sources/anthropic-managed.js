@@ -185,6 +185,13 @@ export async function* fetchSessionEntries({ apiKey, agentId, sessionId, model }
     if (!RELEVANT.has(ev.type)) continue;
     const type = ev.type;
     const ts = ev.processed_at || ev.created_at || new Date().toISOString();
+    // v1.0.2 F-6a: capture Anthropic's own discriminators on EVERY event,
+    // not just thread_message_*. session_thread_id + agent_name are how
+    // the vendor itself tells parent activity from sub-agent activity.
+    // Preserved LOCALLY (NDJSON) only — never sent raw to Fortress.
+    const session_thread_id = ev.session_thread_id ?? null;
+    const agent_name = ev.agent_name ?? null;
+    const subAgentMeta = { session_thread_id, agent_name };
     const tsMillis = tsMs(ev);
 
     if (type === 'span.model_request_start') {
@@ -201,6 +208,7 @@ export async function* fetchSessionEntries({ apiKey, agentId, sessionId, model }
       const cw = u.cache_creation_input_tokens || 0;
       yield {
         ...base,
+        ...subAgentMeta,
         id: ev.id,
         action_type: 'llm_call',
         tool_name: null,
@@ -220,6 +228,7 @@ export async function* fetchSessionEntries({ apiKey, agentId, sessionId, model }
     if (type === 'user.message') {
       yield {
         ...base,
+        ...subAgentMeta,
         id: ev.id,
         action_type: 'user_message',
         tool_name: null,
@@ -234,6 +243,7 @@ export async function* fetchSessionEntries({ apiKey, agentId, sessionId, model }
     if (type === 'user.interrupt') {
       yield {
         ...base,
+        ...subAgentMeta,
         id: ev.id,
         action_type: 'user_interrupt',
         tool_name: null,
@@ -249,6 +259,7 @@ export async function* fetchSessionEntries({ apiKey, agentId, sessionId, model }
       const denied = ev.result === 'deny';
       yield {
         ...base,
+        ...subAgentMeta,
         id: ev.id,
         action_type: 'tool_confirmation',
         tool_name: null,
@@ -265,6 +276,7 @@ export async function* fetchSessionEntries({ apiKey, agentId, sessionId, model }
     if (type === 'user.custom_tool_result') {
       yield {
         ...base,
+        ...subAgentMeta,
         id: ev.id,
         action_type: 'custom_tool_result',
         tool_name: null,
@@ -280,6 +292,7 @@ export async function* fetchSessionEntries({ apiKey, agentId, sessionId, model }
     if (type === 'agent.message') {
       yield {
         ...base,
+        ...subAgentMeta,
         id: ev.id,
         action_type: 'message',
         tool_name: null,
@@ -294,6 +307,7 @@ export async function* fetchSessionEntries({ apiKey, agentId, sessionId, model }
     if (type === 'agent.thinking') {
       yield {
         ...base,
+        ...subAgentMeta,
         id: ev.id,
         action_type: 'thinking',
         tool_name: null,
@@ -321,6 +335,7 @@ export async function* fetchSessionEntries({ apiKey, agentId, sessionId, model }
       const isError = ev.is_error === true;
       yield {
         ...base,
+        ...subAgentMeta,
         id: ev.id,
         action_type: start?.isMcp ? 'mcp_tool_use' : 'tool_use',
         tool_name: start?.name || 'unknown',
@@ -337,6 +352,7 @@ export async function* fetchSessionEntries({ apiKey, agentId, sessionId, model }
     if (type === 'agent.custom_tool_use') {
       yield {
         ...base,
+        ...subAgentMeta,
         id: ev.id,
         action_type: 'custom_tool_use',
         tool_name: ev.name || 'unknown',
@@ -351,6 +367,7 @@ export async function* fetchSessionEntries({ apiKey, agentId, sessionId, model }
     if (type === 'agent.thread_context_compacted') {
       yield {
         ...base,
+        ...subAgentMeta,
         id: ev.id,
         action_type: 'context_compacted',
         tool_name: null,
@@ -370,6 +387,7 @@ export async function* fetchSessionEntries({ apiKey, agentId, sessionId, model }
       const direction = type.endsWith('_sent') ? 'sent' : 'received';
       yield {
         ...base,
+        ...subAgentMeta,
         id: ev.id,
         action_type: `thread_message_${direction}`,
         tool_name: null,
@@ -391,6 +409,7 @@ export async function* fetchSessionEntries({ apiKey, agentId, sessionId, model }
       const { id: _id, type: _type, processed_at: _pa, created_at: _ca, ...changes } = ev;
       yield {
         ...base,
+        ...subAgentMeta,
         id: ev.id,
         action_type: 'config_change',
         tool_name: null,
@@ -405,6 +424,7 @@ export async function* fetchSessionEntries({ apiKey, agentId, sessionId, model }
     if (type === 'session.thread_created') {
       yield {
         ...base,
+        ...subAgentMeta,
         id: ev.id,
         action_type: 'thread_created',
         tool_name: null,
@@ -422,6 +442,7 @@ export async function* fetchSessionEntries({ apiKey, agentId, sessionId, model }
     if (type === 'session.error') {
       yield {
         ...base,
+        ...subAgentMeta,
         id: ev.id,
         action_type: 'session_error',
         tool_name: null,
@@ -443,6 +464,7 @@ export async function* fetchSessionEntries({ apiKey, agentId, sessionId, model }
       const fatal = state === 'terminated';
       yield {
         ...base,
+        ...subAgentMeta,
         id: ev.id,
         action_type: 'state_transition',
         tool_name: null,

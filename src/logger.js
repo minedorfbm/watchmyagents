@@ -13,6 +13,8 @@ import { assertSafePathSegment } from './validate.js';
 const EXPORT_FIELDS = [
   'id', 'agent_id', 'parent_agent_id', 'composition_pattern',
   'provider', 'timestamp', 'action_type',
+  // v1.0.2 F-6a — Anthropic-style sub-agent discriminators preserved locally
+  'session_thread_id', 'agent_name',
   'tool_name', 'duration_ms', 'tokens_used',
   'input_tokens', 'output_tokens', 'cache_read_tokens', 'cache_creation_tokens',
   'cost_usd', 'model',
@@ -60,6 +62,11 @@ export class Logger {
       // populates these on the event, and the Logger threads them through.
       parent_agent_id: e.parent_agent_id ?? null,
       composition_pattern: e.composition_pattern || 'solo',
+      // v1.0.2 F-6a: Anthropic-style discriminators preserved LOCAL ONLY
+      // (never sent raw to Fortress — SignalsAggregator derives the
+      // aggregated session_ids list from these at finalize time).
+      session_thread_id: e.session_thread_id ?? null,
+      agent_name: e.agent_name ?? null,
       provider: e.provider || e.framework || 'generic',
       timestamp: e.timestamp || new Date().toISOString(),
       action_type: e.action_type || 'tool_call',

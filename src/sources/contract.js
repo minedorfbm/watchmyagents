@@ -127,6 +127,19 @@ export const PROVIDERS = Object.freeze({
 //  * SUB-AGENT FIELDS (PR-C — see WMAAction.parent_agent_id):
 //  * @property {string|null} parent_agent_id        Null for root agents
 //  * @property {string|null} composition_pattern    From COMPOSITION_PATTERNS
+//  *
+//  * MULTI-AGENT DISCRIMINATORS (v1.0.2 F-6a — preserved LOCALLY only,
+//  * never sent raw to Fortress; the SignalsAggregator derives the
+//  * aggregated session_ids list from them at finalize time):
+//  * @property {string|null} session_thread_id      The thread the event happened in.
+//  *                                                For frameworks where one session can
+//  *                                                host multiple threads/sub-agents
+//  *                                                (Anthropic Task tool, future similar
+//  *                                                designs), this is how the vendor
+//  *                                                itself discriminates "parent vs sub".
+//  * @property {string|null} agent_name             The human-named emitter of this event
+//  *                                                (the parent agent OR a sub-agent
+//  *                                                running inside the parent's session).
 //  */
 
 const REQUIRED_FIELDS = ['id', 'provider', 'agent_id', 'session_id', 'action_type', 'timestamp', 'status'];

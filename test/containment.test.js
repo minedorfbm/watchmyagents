@@ -138,6 +138,8 @@ test('Containment: signals payload shape contains only the documented keys', () 
     'sequences_top10',
     'stop_reasons',
     'tokens_total',
+    // v1.0.2 F-6c — opaque session_ids list for operator forensics
+    'session_ids',
   ]);
   for (const k of Object.keys(out.payload)) {
     assert.ok(
@@ -223,4 +225,52 @@ test('Containment F-3: normalizeToolName refuses to operate without salt on unkn
   assert.equal(normalizeToolName('web_search', null), 'web_search');
   // Unknown names without salt would leak the raw name silently — refuse.
   assert.throws(() => normalizeToolName('custom_unknown_tool', null), /salt/);
+});
+
+// ── F-6 (Codex audit follow-up): session_ids forensic trail ─────────────
+
+test('Containment F-6: payload.session_ids collects distinct session_ids from the window', () => {
+  const agg = new SignalsAggregator({ salt: SALT });
+  agg.add(syntheticEvent({ session_id: 'sess_A1', id: 'evt_1' }));
+  agg.add(syntheticEvent({ session_id: 'sess_B2', id: 'evt_2' }));
+  agg.add(syntheticEvent({ session_id: 'sess_A1', id: 'evt_3' })); // dup
+  const out = agg.finalize();
+
+  assert.ok(Array.isArray(out.payload.session_ids), 'session_ids is an array');
+  // Deduplicated + sorted (deterministic across reruns)
+  assert.deepEqual(out.payload.session_ids, ['sess_A1', 'sess_B2']);
+});
+
+test('Containment F-6: payload.session_ids is empty when no entries have session_id', () => {
+  const agg = new SignalsAggregator({ salt: SALT });
+  agg.add(syntheticEvent({ session_id: null, id: 'evt_1' }));
+  agg.add(syntheticEvent({ session_id: undefined, id: 'evt_2' }));
+  agg.add(syntheticEvent({ session_id: '', id: 'evt_3' }));
+  const out = agg.finalize();
+
+  assert.deepEqual(out.payload.session_ids, [],
+    'session_ids must be an empty array when no session_id is present, never null/undefined');
+});
+
+test('Containment F-6: session_ids carry only opaque tokens, never raw content', () => {
+  // Even when an entry has rich raw content (which the aggregator never
+  // ships anyway), the session_id is taken VERBATIM from the entry's
+  // session_id field — no transformation, no merging with any other field.
+  // The Anthropic format is `sess_<base62>` which is what we expect.
+  const agg = new SignalsAggregator({ salt: SALT });
+  agg.add(syntheticEvent({
+    session_id: 'sess_01XaNB4M88ZvcW8FoQ5GC14A',
+    input: { url: SECRET_URL, query: SECRET_QUERY },
+    output: { content: SECRET_OUTPUT },
+    error: SECRET_ERROR,
+  }));
+  const out = agg.finalize();
+
+  // The opaque session_id IS present (forensic value)
+  assert.deepEqual(out.payload.session_ids, ['sess_01XaNB4M88ZvcW8FoQ5GC14A']);
+  // No raw content leaked anywhere in the serialized payload
+  const serialized = JSON.stringify(out);
+  for (const secret of [SECRET_URL, SECRET_QUERY, SECRET_OUTPUT, SECRET_ERROR]) {
+    assert.ok(!serialized.includes(secret), `Containment leak via F-6: "${secret}"`);
+  }
 });
