@@ -18,6 +18,7 @@
 import { request } from 'node:https';
 import { URLSearchParams } from 'node:url';
 import { Source, PROVIDERS, ENFORCEMENT_MODES } from './contract.js';
+import { getAgentConfig, detectAlwaysAsk } from '../shield/enforce.js';
 
 const API_HOST = 'api.anthropic.com';
 const BETA = 'managed-agents-2026-04-01';
@@ -457,6 +458,27 @@ export async function* fetchSessionEntries({ apiKey, agentId, sessionId, model }
       continue;
     }
   }
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// effectiveEnforcementMode — F-2 of the Codex v1.0.1 audit
+// ────────────────────────────────────────────────────────────────────────
+// AnthropicManagedSource.enforcementMode is the PROVIDER'S MAX capability
+// (sync_confirm). But the EFFECTIVE mode for a given agent depends on
+// whether at least one of its tools/toolsets has permission_policy =
+// always_ask. When none does, Shield can only interrupt AFTER a violating
+// tool ran, not block before — that's sync_interrupt territory.
+//
+// This helper resolves the per-agent effective mode from the live agent
+// config so the value shipped to Fortress matches what Shield can
+// actually do for THIS agent. Without this, Fortress can mis-display
+// "sync_confirm" UI on an agent that's only interrupt-capable, leading
+// the operator to deploy Shield policies that won't pre-block.
+export async function effectiveEnforcementMode(apiKey, agentId) {
+  const agentConfig = await getAgentConfig(apiKey, agentId);
+  return detectAlwaysAsk(agentConfig)
+    ? ENFORCEMENT_MODES.SYNC_CONFIRM
+    : ENFORCEMENT_MODES.SYNC_INTERRUPT;
 }
 
 function extractText(content) {

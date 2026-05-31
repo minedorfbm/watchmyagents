@@ -183,8 +183,13 @@ async function main() {
   // is a one-shot post-hoc tool — it has no per-entry context to derive
   // hierarchy from, so it sends defaults (solo / null) until a future
   // adapter writes those fields into the local NDJSON.
-  // PR-D: enforcement_mode read from the Source class so any change to
-  // the adapter's capability automatically reflects in the payload.
+  // PR-D / v1.0.1 F-2: enforcement_mode set to the provider's MAX
+  // capability (sync_confirm). The continuous Watch daemon
+  // (wma-fetch --watch --upload) resolves the EFFECTIVE per-agent mode
+  // via effectiveEnforcementMode(), but this one-shot uploader has no
+  // ANTHROPIC_API_KEY in scope so it cannot make the live getAgent
+  // call. Best-effort: send the max; the daemon's subsequent uploads
+  // will correct the value once it resolves.
   const body = {
     provider: AnthropicManagedSource.providerName,
     native_agent_id: agentId,

@@ -34,7 +34,7 @@ import { classifyAgentType } from '../src/typology.js';
 import { aggregate, buildFeatures } from '../src/typology-features.js';
 import {
   getAgent, listAgents, listSessions, fetchSessionEntries, fetchRawEvents,
-  AnthropicManagedSource,
+  AnthropicManagedSource, effectiveEnforcementMode,
 } from '../src/sources/anthropic-managed.js';
 
 function parseArgs(argv) {
@@ -111,7 +111,7 @@ function postJson(url, headers, body) {
 // `classification` (optional) carries the agent's typology — Fortress upserts
 // agent_type/confidence/stage on the agent row so the typology badge + the
 // apply-template flow fill themselves with no manual click.
-async function uploadSignals(uploadCtx, agentId, displayName, entries, classification) {
+async function uploadSignals(uploadCtx, agentId, displayName, entries, classification, enforcementMode) {
   const agg = new SignalsAggregator({ salt: uploadCtx.salt });
   for (const e of entries) agg.add(e);
   const sig = agg.finalize();
@@ -132,16 +132,18 @@ async function uploadSignals(uploadCtx, agentId, displayName, entries, classific
   // so old Fortress instances still recognize the upload. Once the
   // Lovable-deployed ingest-signals migrates, future SDK releases will
   // stop emitting `anthropic_agent_id`.
-  // PR-D: enforcement_mode is read CANONICALLY from the Source's static
-  // declaration so it stays in sync with the actual capability of the
-  // adapter — never re-declared inline.
+  // PR-D / v1.0.1 F-2: enforcement_mode is the EFFECTIVE per-agent mode
+  // (sync_confirm only if the agent has permission_policy: always_ask on
+  // at least one tool; sync_interrupt otherwise). Falls back to the
+  // Source's static MAX capability if the resolution failed upstream —
+  // legacy behavior, but flags a warning in the daemon log.
   const body = JSON.stringify({
     provider: AnthropicManagedSource.providerName,
     native_agent_id: agentId,
     anthropic_agent_id: agentId,
     parent_agent_id,
     composition_pattern,
-    enforcement_mode: AnthropicManagedSource.enforcementMode,
+    enforcement_mode: enforcementMode || AnthropicManagedSource.enforcementMode,
     display_name: displayName,
     window_start: sig.window_start,
     window_end: sig.window_end,
@@ -250,6 +252,10 @@ async function runWatch({ apiKey, resolveAgents, fleet, logDir, intervalMs, wind
   const sessionAgent = new Map();// sessionId → { agentId, model, displayName }
   const priors = new Map();      // agentId → previous classification (threads the
                                   // typology state machine across upload cycles)
+  // F-2: cache the effective enforcement mode per agent. One getAgent call
+  // per agent per daemon run (until the entry is evicted). Refreshed only
+  // if upload fails — agent permission_policy doesn't change mid-flight.
+  const enforcementModes = new Map(); // agentId → 'sync_confirm' | 'sync_interrupt'
 
   const ac = new AbortController();
   const shutdown = () => { info('shutting down…'); ac.abort(); };
@@ -319,7 +325,19 @@ async function runWatch({ apiKey, resolveAgents, fleet, logDir, intervalMs, wind
             classification = { agent_type: cls.classified_type, confidence: cls.confidence, stage: cls.stage };
           } catch (e) { warn(`  classification skipped: ${e.message}`); }
 
-          const resp = await uploadSignals(uploadCtx, ag.agentId, sendNames ? ag.displayName : ag.agentId, fresh, classification);
+          // F-2: resolve the effective enforcement mode for this agent
+          // (cached across cycles). On failure, fall back to the static
+          // provider max so the upload still succeeds.
+          let mode = enforcementModes.get(ag.agentId);
+          if (!mode) {
+            try {
+              mode = await effectiveEnforcementMode(apiKey, ag.agentId);
+              enforcementModes.set(ag.agentId, mode);
+            } catch (e) {
+              warn(`  enforcement_mode resolution failed for ${ag.agentId}: ${e.message} (falling back to provider max)`);
+            }
+          }
+          const resp = await uploadSignals(uploadCtx, ag.agentId, sendNames ? ag.displayName : ag.agentId, fresh, classification, mode);
           if (resp?.signal_id) {
             const cTag = classification ? ` · type ${classification.agent_type} (${Math.round(classification.confidence * 100)}%, ${classification.stage})` : '';
             info(`  ↑ signals uploaded (signal_id ${resp.signal_id})${cTag}`);
