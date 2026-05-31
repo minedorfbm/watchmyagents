@@ -107,7 +107,7 @@ Each entry carries: `id`, `agent_id`, `framework`, `timestamp`, `action_type`, `
 ```bash
 wma-fetch (--agent-id <agent_id> | --all-agents) [--session-id <sess_id>] [--since 1h]
          [--log-dir ./watchmyagents-logs] [--dump-raw]
-         [--watch [--interval 5m] [--upload]]
+         [--watch [--interval 1m] [--upload]]
 ```
 
 | Flag | Effect |
@@ -119,7 +119,7 @@ wma-fetch (--agent-id <agent_id> | --all-agents) [--session-id <sess_id>] [--sin
 | `--log-dir ./logs` | Where to write NDJSON (default `./watchmyagents-logs`) |
 | `--dump-raw` | Also save raw API events alongside (forensic / debugging) |
 | `--watch` | **Continuous daemon** — loop forever, incrementally capturing NEW events (deduped by stable event id) until `Ctrl+C` |
-| `--interval 5m` | Poll interval in watch mode (default `5m`; accepts `30s`/`1h`/…) |
+| `--interval 1m` | Poll interval in watch mode (default `1m` since v1.1.0; was `5m` in v1.0.x; accepts `30s`/`1h`/…). At each tick Watch re-discovers the fleet AND polls for new events on tracked sessions. |
 | `--upload` | In watch mode, anonymize each new window and ship signals to Fortress (needs `WMA_API_KEY` + `WMA_FORTRESS_BASE_URL` + `WMA_SIGNALS_SALT`). Raw stays local. |
 | `--discovery-since 7d` | Window for discovering NEW sessions (default `7d`). Sessions already being tracked are re-fetched regardless of age, so long-running ones never drop out. |
 | `--no-send-agent-names` | Opt-out: send only the agent id as the Fortress `display_name`. **By default, the human agent name** (sanitized) is sent so dashboards/decisions stay legible. Pass this flag if your agent names themselves carry client/project info you'd rather keep pseudonymized. |
@@ -198,7 +198,7 @@ export WMA_API_KEY="wma_..."
 export WMA_FORTRESS_BASE_URL="https://<project>.supabase.co/functions/v1"
 export WMA_SIGNALS_SALT="..."                                 # stable per-customer salt
 
-wma-service install (--agent-id agent_01ABC... | --all-agents) [--interval 5m] [--with-shield]
+wma-service install (--agent-id agent_01ABC... | --all-agents) [--interval 1m] [--with-shield]
 wma-service status
 wma-service uninstall [--with-shield]
 ```
@@ -217,7 +217,7 @@ After this, the full Watch→Guardian→Shield loop runs hands-off.
 If you'd rather run the loop in a terminal you control (the service wraps this):
 
 ```bash
-wma-fetch --agent-id agent_01ABC... --watch --upload --interval 5m
+wma-fetch --agent-id agent_01ABC... --watch --upload --interval 1m
 ```
 
 It loops until `Ctrl+C`, dedupes by the stable Anthropic event id (no duplicate

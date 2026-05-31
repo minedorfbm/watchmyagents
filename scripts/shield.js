@@ -508,8 +508,13 @@ async function main() {
     let fortressPolicies = null;
     let ruleset = sharedLocalRuleset;
     if (policiesSource === 'fortress') {
+      // v1.1.0 Phase 1 L3.5: policy refresh from Fortress every 60s
+      // (was 5min). Combined with Phase 2 realtime subscription work,
+      // this brings new-policy-deployed-to-Shield latency from 5min
+      // worst-case down to ~60s, with the Phase 2 push model taking
+      // it to sub-second later.
       fortressPolicies = new FortressPolicySource({
-        apiKey: wmaApiKey, base: fortressBase, anthropicAgentId: aid, refreshIntervalMs: 5 * 60_000,
+        apiKey: wmaApiKey, base: fortressBase, anthropicAgentId: aid, refreshIntervalMs: 60_000,
         onError: (e) => warn(`${tag}policy refresh failed (keeping cached): ${e.message}`),
         onRefresh: ({ policies, fetched_at, initial }) => info(`${tag}policies ${initial ? 'loaded' : 'refreshed'} from Fortress — ${policies.length} active (fetched_at: ${fetched_at})`),
       });
@@ -572,9 +577,11 @@ async function main() {
   if (armed.size === 0) {
     die(`error: no agents could be armed (${agentIds.length} discovered; all policy fetches failed). Check WMA_API_KEY / WMA_FORTRESS_BASE_URL.`);
   }
-  info(`fleet: ${armed.size}/${agentIds.length} agent(s) armed; reconciling every 60s for new agents.`);
+  // v1.1.0 Phase 1 L3: supervisor reconcile every 30s (was 60s) so a
+  // freshly-created Anthropic agent gets armed sub-30s instead of sub-minute.
+  info(`fleet: ${armed.size}/${agentIds.length} agent(s) armed; reconciling every 30s for new agents.`);
   while (!ac.signal.aborted) {
-    await sleep(60_000, ac.signal);
+    await sleep(30_000, ac.signal);
     if (ac.signal.aborted) break;
     let all;
     try { all = await listAgents(apiKey); }

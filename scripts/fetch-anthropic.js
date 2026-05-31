@@ -404,7 +404,13 @@ async function main() {
   }
 
   if (watch) {
-    const intervalMs = parseDurationMs(args.interval, 5 * 60_000);
+    // v1.1.0 Phase 1 L1: default Watch cycle = 60s (was 300s/5min). At this
+    // cadence both event polling AND fleet re-discovery happen every minute,
+    // bringing the agent-to-Fortress visibility from 5min worst-case down to
+    // ~60s. ~1440 list/get calls/day against Anthropic — well inside free
+    // tier limits, no behavioral risk. Operators who want the legacy 5min
+    // cadence can still pass --interval 5m explicitly.
+    const intervalMs = parseDurationMs(args.interval, 60_000);
     // Discovery window for NEW sessions (default 7d, configurable). Sessions we
     // already track are re-fetched regardless of age, so long-lived ones don't drop.
     const windowMs = parseDurationMs(args['discovery-since'], 7 * 24 * 3600_000);
