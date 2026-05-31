@@ -122,7 +122,7 @@ wma-fetch (--agent-id <agent_id> | --all-agents) [--session-id <sess_id>] [--sin
 | `--interval 5m` | Poll interval in watch mode (default `5m`; accepts `30s`/`1h`/…) |
 | `--upload` | In watch mode, anonymize each new window and ship signals to Fortress (needs `WMA_API_KEY` + `WMA_FORTRESS_BASE_URL` + `WMA_SIGNALS_SALT`). Raw stays local. |
 | `--discovery-since 7d` | Window for discovering NEW sessions (default `7d`). Sessions already being tracked are re-fetched regardless of age, so long-running ones never drop out. |
-| `--send-agent-names` | Opt-in: send the human agent name as the Fortress `display_name`. Default sends the agent id only (the name may contain client/project info). |
+| `--no-send-agent-names` | Opt-out: send only the agent id as the Fortress `display_name`. **By default, the human agent name** (sanitized) is sent so dashboards/decisions stay legible. Pass this flag if your agent names themselves carry client/project info you'd rather keep pseudonymized. |
 | `--api-key sk-ant-…` | Override the `ANTHROPIC_API_KEY` env var. **Discouraged** — visible in shell history & process list. Prefer the env var. |
 
 Logs land in `./watchmyagents-logs/<agent_id>/<date>.ndjson` (file mode `0600`, dir `0700`).
@@ -247,7 +247,7 @@ WatchMyAgents is built so that **your prompts and outputs never have to leave yo
 |---|---|
 | **Your machine** (`./watchmyagents-logs/`) | Full NDJSON with all prompts, tool inputs, agent outputs. `chmod 600` on every file. |
 | **Anthropic API** | Where the agent runs. WMA pulls events via the public REST API only. |
-| **WMA Fortress** (opt-in, only with `--upload` / `wma-upload-fortress` / `wma-shield --policies-source fortress`) | The **anonymized signals** payload (counts, timings, salted hashes, sequences) + routing identifiers: `provider` (e.g. `"anthropic-managed"`), `native_agent_id`, `anthropic_agent_id` (legacy alias), and `display_name` (defaults to the agent id; the human agent name only with `--send-agent-names`). Shield enforcement **decisions** (hashed session/event/input fingerprints — never raw values). **Never** raw prompts, URLs, commands, or outputs. |
+| **WMA Fortress** (opt-in, only with `--upload` / `wma-upload-fortress` / `wma-shield --policies-source fortress`) | The **anonymized signals** payload (counts, timings, salted hashes, sequences) + routing identifiers: `provider` (e.g. `"anthropic-managed"`), `native_agent_id`, `anthropic_agent_id` (legacy alias), and `display_name` (defaults to the **human agent name** for dashboard UX — pass `--no-send-agent-names` to opt out and send only the agent id). Shield enforcement **decisions** (hashed session/event/input fingerprints — never raw values). **Never** raw prompts, URLs, commands, or outputs. |
 
 This is the "local-first" guarantee: **raw payloads never leave your machine.** Cloud upload is opt-in and carries only anonymized metadata + the agent id/name needed to route it.
 

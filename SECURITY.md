@@ -30,10 +30,21 @@ WMA needs your Anthropic API key to call the Managed Agents REST API on your beh
 
 ### What WMA does NOT do
 
-- ❌ Does not phone home, telemetry, analytics, or usage reporting
-- ❌ Does not send any data to WMA-controlled servers
-- ❌ Does not store, log, or transmit your Anthropic API key anywhere except `api.anthropic.com`
-- ❌ Does not require an account, signup, or license key
+- ❌ No phone-home, no usage analytics, no silent telemetry — WMA never opens a network connection to a WMA-controlled endpoint on its own.
+- ❌ Does not store, log, or transmit your Anthropic API key anywhere except `api.anthropic.com`.
+- ❌ Does not require an account, signup, or license key.
+
+### Fortress upload — strictly opt-in
+
+Since v0.5.0, WMA supports an **opt-in** cloud component (WMA Fortress) for teams who want a multi-agent dashboard + cross-fleet Guardian analysis. The upload only happens when you explicitly invoke `--upload` on `wma-fetch`, run `wma-upload-fortress`, or run `wma-shield --policies-source fortress`. The defaults across all CLIs are zero-cloud — your machine stays the only place raw data ever exists.
+
+What goes to Fortress when you opt in:
+- ✅ The **anonymized signals payload** (counts, latencies, salted IoC hashes, sequences, classification metadata) — see [`docs/CONTAINMENT.md`](docs/CONTAINMENT.md) for the bit-exact contract and the 6 invariant tests that lock it down.
+- ✅ Routing identifiers (`provider`, `native_agent_id`, optionally the human `display_name` — see `--no-send-agent-names` to opt this out).
+
+What does **NOT** go to Fortress, ever:
+- ❌ Raw prompts, agent outputs, tool inputs, tool outputs, error message text, raw URLs, raw commands, raw queries — these stay in your local `watchmyagents-logs/`.
+- ❌ Your Anthropic API key. Fortress authenticates with a separate `WMA_API_KEY` issued from your Fortress account and never sees `ANTHROPIC_API_KEY`.
 
 ## Threat model
 
@@ -55,7 +66,6 @@ WMA combines **two complementary layers**:
 - **Shield being killed.** Shield is an external process. If killed, the agent runs without enforcement until Shield restarts. Run under a process supervisor (systemd, pm2, docker `restart: always`) in production.
 - **Pre-installation activity.** Shield only enforces from the moment it attaches forward. Past events are not retroactively replayed or re-evaluated.
 - **A malicious policy file.** Shield's policy engine refuses obviously unsafe regex patterns (e.g. catastrophic backtracking) and truncates inputs before regex tests to mitigate ReDoS. But a user-controlled policy file remains a code-adjacent input — treat it as you would treat sourcecode.
-- **A compromised Anthropic API.** WMA trusts the events delivered by Anthropic. This is out of scope.
 - **A compromised Anthropic API.** WMA trusts the events delivered by Anthropic. This is out of scope.
 
 ## Supply chain
