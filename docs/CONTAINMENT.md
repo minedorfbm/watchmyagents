@@ -1,6 +1,6 @@
 # Containment — the WMA architectural invariant
 
-> **Raw payloads (prompts, agent outputs, tool arguments — URLs, queries, paths, commands, raw error messages) MUST NEVER leave the customer machine via any WMA upload path. The only bytes that cross to WMA Fortress are anonymized signals: counts, salted SHA-256 hashes, latencies, sequences, classification, and routing metadata.**
+> **Raw payloads (prompts, agent outputs, tool arguments — URLs, queries, paths, commands, raw error messages) MUST NEVER leave the customer machine via any WMA upload path. The only bytes that cross to WMA Fortress are anonymized signals: counts, salted SHA-256 hashes, latencies, sequences, classification, and routing/forensic metadata (provider, opaque agent_id, opaque session_ids[], display_name).**
 
 This is the architectural promise of WatchMyAgents. Every byte that crosses the WMA cloud boundary passes through `src/anonymizer.js`. Adapters that bypass this gate are forbidden.
 
@@ -17,6 +17,37 @@ Customers run agents that:
 If WMA shipped raw payloads to its cloud, every WMA customer would need a vendor security review of WMA's cloud infrastructure to procure WMA. By holding raw payloads on the customer's machine **forever**, WMA flips the threat model: there is nothing to steal from WMA's cloud.
 
 > The WMA cloud (Fortress) is *payload-blind by construction*. A breach of Fortress reveals counts, latencies, and salted hashes — never your prompts, your URLs, or your code.
+
+---
+
+## Routing & forensic metadata — what CAN cross to Fortress
+
+Containment forbids **content**. It does NOT forbid the small set of **opaque routing/forensic identifiers** an operator needs to associate a Fortress decision with a customer-side investigation. These are tokens emitted by the vendor (Anthropic, OpenAI, AWS, …) with no semantic content, in the same sensitivity class as a UUID.
+
+| Field | Source | Why it crosses |
+|---|---|---|
+| `provider` | Constant per Source | Multi-framework routing — which adapter produced this signal |
+| `native_agent_id` | Vendor agent id (e.g. `agent_01XaNB…`) | Associate the signal with the right agent record |
+| `anthropic_agent_id` | Legacy alias (deprecated, v0.x compat) | Backwards compatibility window |
+| `display_name` | Customer-named agent label, sanitized | Dashboard legibility (opt-out via `--no-send-agent-names`) |
+| `parent_agent_id` | Canonical sub-agent reference (PR-C) | Subtree policy cascade resolution |
+| `composition_pattern` | `solo` / `hierarchy` / `graph` / `peer` | UI tree + cross-framework consistency |
+| `enforcement_mode` | Effective per-agent capability | UX disable Shield UI on detect_only adapters |
+| `classification` | `{agent_type, confidence, stage}` | Typology badge + Shield template selection |
+| **`session_ids[]`** (v1.0.2 F-6c) | **Opaque vendor session tokens** (e.g. Anthropic `sess_01XaNB…`) | **Forensic short-circuit**: operator clicks a Shield decision in Fortress → sees the session_ids active in that window → grep local NDJSON immediately → full raw context. Without this, the operator would have to reconstruct from timestamps. |
+
+### Recommended Fortress-side guardrails for `session_ids[]`
+
+Because `session_ids[]` enable a customer-side forensic chain, they're **non-secret but sensitive**. Fortress SHOULD apply layered protection (cf the Codex audit recommendations, 2026-05-31):
+
+1. **RBAC** — visible to `incident` / `security_admin` roles only ; standard `viewer` accounts don't see the column.
+2. **Default-export hygiene** — CSV / JSON exports omit `session_ids[]` unless an `include_session_ids=true` flag is explicitly set.
+3. **UI masking** — display masked by default (`sess_01Xa…C14A`), with a "reveal" button that triggers an audit log entry.
+4. **Audit log** — every reveal / copy / export action logs `{user_id, session_id, action, ts}` to an immutable audit table.
+5. **Retention policy** — `session_ids[]` are dropped from signals records after N days (recommended: same TTL as the operator's forensic-investigation window, e.g. 90 days).
+6. **Server-side log hygiene** — Fortress backend MUST NOT echo `session_ids[]` into application logs, error traces, or third-party APM tools.
+
+These guardrails are documented for the Fortress implementation team; they don't change the SDK side, which simply ships the opaque tokens.
 
 ---
 

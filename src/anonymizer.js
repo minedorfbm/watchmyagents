@@ -18,9 +18,17 @@
 //   - output.content (agent text)
 //   - raw URLs / commands / queries
 //   - error messages
-//   - readable session_id (hashed)
-//   - readable agent_id (hashed)
 //   - PII of any kind
+//
+// Forensic routing metadata that DOES cross to Fortress (opaque tokens,
+// no semantic content, same sensitivity class as agent_id):
+//   - session_ids[]  — opaque vendor session ids (e.g. Anthropic
+//                      `sess_01XaNB…`). Sent so the operator looking
+//                      at a Shield decision in Fortress can grep the
+//                      LOCAL NDJSON for full raw context.
+//                      → see docs/CONTAINMENT.md "Routing & forensic
+//                        metadata" + the Fortress-side guardrails
+//                        (RBAC, UI masking, audit log, retention).
 //
 // This is the single bottleneck between Watch (local) and Fortress (cloud).
 // Every byte that crosses to the cloud passes through this module.
