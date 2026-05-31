@@ -159,6 +159,80 @@ async function uploadSignals(uploadCtx, agentId, displayName, entries, classific
   return resp;
 }
 
+// v1.1.0 L2 — minimal one-shot registration signal sent to Fortress so
+// a freshly-created Anthropic agent appears in the dashboard immediately,
+// without waiting for the next Watch cycle AND without waiting for actual
+// activity. The signal carries an empty SignalsAggregator payload + a
+// degenerate window (window_start == window_end == now) so Fortress's
+// ingest-signals upserts the agent row but contributes zero metrics.
+// Used by --discover-now CLI mode.
+async function uploadDiscoverySignal(uploadCtx, agentId, displayName, enforcementMode) {
+  const now = new Date().toISOString();
+  const body = JSON.stringify({
+    provider: AnthropicManagedSource.providerName,
+    native_agent_id: agentId,
+    anthropic_agent_id: agentId,
+    parent_agent_id: null,
+    composition_pattern: 'solo',
+    enforcement_mode: enforcementMode || AnthropicManagedSource.enforcementMode,
+    display_name: displayName,
+    window_start: now,
+    window_end: now,
+    payload: {
+      counts: {},
+      tool_counts: {},
+      latencies_p50_ms: {},
+      latencies_p95_ms: {},
+      error_rate_by_tool: {},
+      ioc_hashes: [],
+      sequences_top10: [],
+      stop_reasons: {},
+      tokens_total: 0,
+      session_ids: [],
+    },
+  });
+  const { status, body: resp } = await postJson(
+    uploadCtx.url, { authorization: `Bearer ${uploadCtx.apiKey}` }, body,
+  );
+  if (status < 200 || status >= 300) {
+    throw new Error(`ingest-signals HTTP ${status}: ${typeof resp === 'string' ? resp.slice(0, 200) : JSON.stringify(resp)}`);
+  }
+  return resp;
+}
+
+// One-shot "discover and register" mode: list every agent the customer's
+// Anthropic key can see, derive each effective enforcement mode, and push
+// a discovery signal to Fortress so the agent appears in the dashboard
+// immediately. Exits when done — no watch loop, no event polling.
+async function runDiscoverNow({ apiKey, uploadCtx, sendNames }) {
+  info('discover-now: listing agents from Anthropic…');
+  let agents;
+  try { agents = await listAgents(apiKey); }
+  catch (e) { die(`failed to list agents: ${e.message}`); }
+  info(`discover-now: ${agents.length} agent(s) found`);
+
+  let registered = 0;
+  let skipped = 0;
+  let failed = 0;
+  for (const a of agents) {
+    if (!a.id || !isValidAgentId(a.id)) { skipped++; continue; }
+    const displayName = sendNames ? cleanLabel(a.name) || a.id : a.id;
+    // Resolve effective enforcement mode best-effort; fall back to provider max.
+    let mode;
+    try { mode = await effectiveEnforcementMode(apiKey, a.id); }
+    catch (e) { warn(`  enforcement_mode resolution failed for ${a.id}: ${e.message} (using provider max)`); }
+    try {
+      const resp = await uploadDiscoverySignal(uploadCtx, a.id, displayName, mode);
+      registered++;
+      info(`  ✓ ${a.id} (${displayName})${resp?.registered_new_agent ? ' 🆕' : ''}`);
+    } catch (e) {
+      failed++;
+      warn(`  ✗ ${a.id}: ${e.message}`);
+    }
+  }
+  info(`discover-now: done — ${registered} registered, ${skipped} skipped, ${failed} failed`);
+}
+
 // Preload already-written entry ids so a restarted daemon doesn't re-append
 // events captured in a previous run (dedup by the stable Anthropic event id).
 async function preloadSeenIds(logDir, agentId) {
@@ -374,8 +448,23 @@ async function main() {
   const watch = !!args.watch;
   const upload = !!args.upload;
   const allAgents = !!args['all-agents'];
+  const discoverNow = !!args['discover-now'];
 
   if (!apiKey) die('error: --api-key or ANTHROPIC_API_KEY required');
+  // --discover-now is its own mode: list+register every agent immediately, exit.
+  // It requires the same Fortress credentials as --upload (it IS a one-shot upload).
+  if (discoverNow) {
+    const wmaKey = process.env.WMA_API_KEY;
+    const salt = process.env.WMA_SIGNALS_SALT;
+    const base = resolveFortressBase({});
+    if (!wmaKey) die('error: --discover-now needs WMA_API_KEY env (from Fortress dashboard → Settings → API Keys)');
+    if (!base) die('error: --discover-now needs WMA_FORTRESS_BASE_URL env');
+    if (!salt) die('error: --discover-now needs WMA_SIGNALS_SALT env');
+    if (salt.length < 16) die('error: WMA_SIGNALS_SALT too short (need ≥16 hex chars)');
+    const uploadCtx = { apiKey: wmaKey, salt, url: fortressEndpoint(base, 'ingest-signals') };
+    const sendNames = args['no-send-agent-names'] !== true;
+    return runDiscoverNow({ apiKey, uploadCtx, sendNames });
+  }
   if (!allAgents && !agentId) die('error: --agent-id required (or --all-agents for fleet mode)');
   if (allAgents && !watch) die('error: --all-agents requires --watch (fleet daemon). For a one-shot, target a single --agent-id.');
   if (agentId && !isValidAgentId(agentId)) {

@@ -124,6 +124,7 @@ wma-fetch (--agent-id <agent_id> | --all-agents) [--session-id <sess_id>] [--sin
 | `--discovery-since 7d` | Window for discovering NEW sessions (default `7d`). Sessions already being tracked are re-fetched regardless of age, so long-running ones never drop out. |
 | `--no-send-agent-names` | Opt-out: send only the agent id as the Fortress `display_name`. **By default, the human agent name** (sanitized) is sent so dashboards/decisions stay legible. Pass this flag if your agent names themselves carry client/project info you'd rather keep pseudonymized. |
 | `--api-key sk-ant-…` | Override the `ANTHROPIC_API_KEY` env var. **Discouraged** — visible in shell history & process list. Prefer the env var. |
+| `--discover-now` | **One-shot fast-register mode** (v1.1.0+). Lists every agent your Anthropic key can see and pushes a discovery signal to Fortress so they appear in the dashboard immediately — no waiting for the next Watch cycle, no need to trigger activity first. Requires the same env (`WMA_API_KEY`, `WMA_FORTRESS_BASE_URL`, `WMA_SIGNALS_SALT`) as `--upload`. Exits when done. Typical use: after creating a new agent in the Anthropic console, run `wma-fetch --discover-now` and it shows up in Fortress in ~2 seconds. |
 
 Logs land in `./watchmyagents-logs/<agent_id>/<date>.ndjson` (file mode `0600`, dir `0700`).
 
