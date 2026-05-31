@@ -157,6 +157,44 @@ test('AnthropicManagedSource.streamEvents requires sessionId', async () => {
   );
 });
 
+// ── F-4 (Codex audit): AnthropicManagedSource.enforce() argument guards ──
+
+test('F-4: enforce rejects non-object action', async () => {
+  const s = new AnthropicManagedSource({ apiKey: 'sk-fake' });
+  await assert.rejects(s.enforce(null, { decision: 'allow' }), /action must be a WMAAction/);
+  await assert.rejects(s.enforce('foo', { decision: 'allow' }), /action must be a WMAAction/);
+});
+
+test('F-4: enforce requires action.session_id', async () => {
+  const s = new AnthropicManagedSource({ apiKey: 'sk-fake' });
+  await assert.rejects(
+    s.enforce({ agent_id: 'a', action_type: 'tool_use', id: 'evt' }, { decision: 'allow' }),
+    /session_id/,
+  );
+});
+
+test('F-4: enforce requires action.agent_id', async () => {
+  const s = new AnthropicManagedSource({ apiKey: 'sk-fake' });
+  await assert.rejects(
+    s.enforce({ session_id: 's', action_type: 'tool_use', id: 'evt' }, { decision: 'allow' }),
+    /agent_id/,
+  );
+});
+
+test('F-4: enforce requires decision in {allow, deny}', async () => {
+  const s = new AnthropicManagedSource({ apiKey: 'sk-fake' });
+  const validAction = { agent_id: 'a', session_id: 's', action_type: 'tool_use', id: 'evt' };
+  await assert.rejects(s.enforce(validAction, { decision: 'maybe' }), /'allow' or 'deny'/);
+  await assert.rejects(s.enforce(validAction, {}), /'allow' or 'deny'/);
+  await assert.rejects(s.enforce(validAction, null), /'allow' or 'deny'/);
+});
+
+test('F-4: AnthropicManagedSource exposes a _modeCache for per-agent memoization', () => {
+  const s = new AnthropicManagedSource({ apiKey: 'sk-fake' });
+  assert.ok(s._modeCache instanceof Map, 'cache must be a Map instance');
+  assert.equal(s._modeCache.size, 0, 'cache starts empty');
+});
+
 // ── assertImplementsSource — defensive checks ────────────────────────────
 
 test('assertImplementsSource rejects classes that do not extend Source', () => {

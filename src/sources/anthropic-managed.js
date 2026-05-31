@@ -17,8 +17,11 @@
 
 import { request } from 'node:https';
 import { URLSearchParams } from 'node:url';
-import { Source, PROVIDERS, ENFORCEMENT_MODES } from './contract.js';
-import { getAgentConfig, detectAlwaysAsk } from '../shield/enforce.js';
+import { Source, PROVIDERS, ENFORCEMENT_MODES, ACTION_TYPES } from './contract.js';
+import {
+  getAgentConfig, detectAlwaysAsk,
+  confirmAllow, confirmDeny, interruptSession,
+} from '../shield/enforce.js';
 
 const API_HOST = 'api.anthropic.com';
 const BETA = 'managed-agents-2026-04-01';
@@ -512,6 +515,23 @@ export class AnthropicManagedSource extends Source {
     super({ apiKey });
     if (!apiKey) throw new Error('AnthropicManagedSource requires an apiKey');
     this.apiKey = apiKey;
+    // Per-agent effective enforcement mode cache. One getAgent call per
+    // agent across the lifetime of the Source instance.
+    this._modeCache = new Map();
+  }
+
+  /**
+   * Resolve the effective enforcement mode for an agent and cache the
+   * answer. Useful internally for enforce() to choose between
+   * pre-execution confirmation (always_ask agents) and post-hoc
+   * interrupt (default agents).
+   */
+  async _getEffectiveModeFor(agentId) {
+    const cached = this._modeCache.get(agentId);
+    if (cached) return cached;
+    const mode = await effectiveEnforcementMode(this.apiKey, agentId);
+    this._modeCache.set(agentId, mode);
+    return mode;
   }
 
   /**
@@ -543,16 +563,77 @@ export class AnthropicManagedSource extends Source {
   }
 
   /**
-   * Enforce a policy decision against a pending action.
+   * Enforce a policy decision against a pending action — v1.0.1 F-4.
    *
-   * PR-A scaffold: the actual `user.tool_confirmation` / `user.interrupt`
-   * HTTP call currently lives in scripts/shield.js, which talks to the
-   * Anthropic API directly. Migrating that into this method is PR-D — at
-   * which point this body will POST the decision via the SSE/HTTP control
-   * channel. For PR-A, the method exists to satisfy the contract;
-   * Shield does not call it yet.
+   * Routes through the right Anthropic event depending on the agent's
+   * effective enforcement mode:
+   *   - sync_confirm  (agent has at least one tool with always_ask):
+   *       'allow' → user.tool_confirmation { result: allow }
+   *       'deny'  → user.tool_confirmation { result: deny }   (pre-execution block)
+   *   - sync_interrupt (no always_ask available):
+   *       'allow' → no-op (nothing to confirm — the tool already ran or
+   *                 will run without a gate)
+   *       'deny'  → user.interrupt + optional follow-up message
+   *                 (post-hoc termination)
+   *
+   * Returns { enforced: boolean, mode: string, native_response?: object }
+   * where `mode` describes the path taken so the caller can log it.
+   *
+   * @param {object} action    A WMAAction (must carry session_id and id)
+   * @param {object} decision  { decision: 'allow'|'deny', reason?: string }
    */
-  async enforce(action, decision) { // eslint-disable-line no-unused-vars
-    throw new Error('AnthropicManagedSource.enforce() — Shield migration pending PR-D (scripts/shield.js still handles enforcement directly)');
+  async enforce(action, decision) {
+    if (!action || typeof action !== 'object') {
+      throw new Error('enforce(action, decision): action must be a WMAAction object');
+    }
+    if (!action.session_id) {
+      throw new Error('enforce(action, decision): action.session_id is required');
+    }
+    if (!action.agent_id) {
+      throw new Error('enforce(action, decision): action.agent_id is required');
+    }
+    if (!decision || (decision.decision !== 'allow' && decision.decision !== 'deny')) {
+      throw new Error(`enforce(action, decision): decision must be 'allow' or 'deny' (got ${decision?.decision})`);
+    }
+
+    const mode = await this._getEffectiveModeFor(action.agent_id);
+    const isToolUse = action.action_type === ACTION_TYPES.TOOL_USE
+      || action.action_type === ACTION_TYPES.MCP_TOOL_USE
+      || action.action_type === ACTION_TYPES.CUSTOM_TOOL_USE;
+
+    // Path 1 — pre-execution confirmation when the agent supports it AND
+    // the pending action is a tool_use (only kind we can pre-block).
+    if (mode === ENFORCEMENT_MODES.SYNC_CONFIRM && isToolUse && action.id) {
+      if (decision.decision === 'allow') {
+        const res = await confirmAllow({
+          apiKey: this.apiKey,
+          sessionId: action.session_id,
+          toolUseId: action.id,
+        });
+        return { enforced: true, mode: 'confirm_allow', native_response: res };
+      }
+      const res = await confirmDeny({
+        apiKey: this.apiKey,
+        sessionId: action.session_id,
+        toolUseId: action.id,
+        denyMessage: decision.reason,
+      });
+      return { enforced: true, mode: 'confirm_deny', native_response: res };
+    }
+
+    // Path 2 — post-hoc interrupt. The only enforcement available when
+    // the agent has no always_ask tools, OR for non-tool actions we
+    // can't pre-block.
+    if (decision.decision === 'deny') {
+      const res = await interruptSession({
+        apiKey: this.apiKey,
+        sessionId: action.session_id,
+        followUpMessage: decision.reason,
+      });
+      return { enforced: true, mode: 'interrupt', native_response: res };
+    }
+
+    // Allow + no pre-gate available = nothing to do at the SDK level.
+    return { enforced: false, mode: 'no_op', reason: 'no pre-execution gate available for this action' };
   }
 }
