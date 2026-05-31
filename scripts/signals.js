@@ -25,6 +25,7 @@ import { resolve, join } from 'node:path';
 import { SignalsAggregator } from '../src/anonymizer.js';
 import { createReadStream } from 'node:fs';
 import { createInterface } from 'node:readline';
+import { maybePrintVersionAndExit } from '../src/version.js';
 
 function parseArgs(argv) {
   const out = {};
@@ -59,6 +60,8 @@ async function collectFiles(p) {
 }
 
 async function main() {
+  // v1.1.1 F-13: --version / -v short-circuit before any other parsing.
+  maybePrintVersionAndExit(process.argv);
   const args = parseArgs(process.argv.slice(2));
 
   if (!args._target) {

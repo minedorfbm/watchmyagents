@@ -25,6 +25,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import { isValidAgentId } from '../src/validate.js';
+import { maybePrintVersionAndExit } from '../src/version.js';
 
 const HOME = os.homedir();
 const PLATFORM = process.platform;                       // 'darwin' | 'linux' | …
@@ -338,6 +339,8 @@ The service starts at login and restarts on crash. Raw logs stay local.
 }
 
 function main() {
+  // v1.1.1 F-13: --version / -v short-circuit before any other parsing.
+  maybePrintVersionAndExit(process.argv);
   const args = parseArgs(process.argv.slice(2));
   const cmd = args._[0];
   switch (cmd) {

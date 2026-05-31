@@ -23,6 +23,7 @@ import { listAgents } from '../src/sources/anthropic-managed.js';
 import { classifyAgentType } from '../src/typology.js';
 import { aggregate, buildFeatures, NON_DERIVABLE } from '../src/typology-features.js';
 import { isValidAgentId, assertSafePathSegment } from '../src/validate.js';
+import { maybePrintVersionAndExit } from '../src/version.js';
 
 function parseArgs(argv) {
   const out = { _: [] };
@@ -43,6 +44,8 @@ function info(msg) { process.stdout.write(`[wma-agents] ${msg}\n`); }
 // extraction). The rest of this file is just CLI presentation.
 
 async function main() {
+  // v1.1.1 F-13: --version / -v short-circuit before any other parsing.
+  maybePrintVersionAndExit(process.argv);
   const args = parseArgs(process.argv.slice(2));
   if (args._[0] && args._[0] !== 'list') die(`unknown command "${args._[0]}" (only "list" supported)`);
   const apiKey = args['api-key'] || process.env.ANTHROPIC_API_KEY;

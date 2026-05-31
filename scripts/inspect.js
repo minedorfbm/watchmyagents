@@ -13,6 +13,7 @@ import { createReadStream } from 'node:fs';
 import { createInterface } from 'node:readline';
 import { join, resolve } from 'node:path';
 import { TokenTracker } from '../src/tokens.js';
+import { maybePrintVersionAndExit } from '../src/version.js';
 
 // Streaming line-by-line reader — bounds memory usage on large NDJSON files
 // (a long-running agent can produce hundreds of MB per day).
@@ -66,6 +67,8 @@ function extractDestination(input) {
 }
 
 async function main() {
+  // v1.1.1 F-13: --version / -v short-circuit before any other parsing.
+  maybePrintVersionAndExit(process.argv);
   const files = await collectFiles(target);
   if (files.length === 0) {
     process.stderr.write(`No .ndjson files found under ${target}\n`); process.exit(1);

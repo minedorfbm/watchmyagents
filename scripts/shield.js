@@ -32,6 +32,7 @@ import {
   confirmAllow, confirmDeny, interruptSession,
   getAgentConfig, detectAlwaysAsk,
 } from '../src/shield/enforce.js';
+import { maybePrintVersionAndExit } from '../src/version.js';
 import { DecisionLogger } from '../src/shield/decisions.js';
 import { listSessions, listAgents } from '../src/sources/anthropic-managed.js';
 import { FortressPolicySource, postDecision } from '../src/shield/sources/fortress.js';
@@ -405,6 +406,8 @@ async function runAgentWide(ctx) {
 // Main
 // ────────────────────────────────────────────────────────────────────────
 async function main() {
+  // v1.1.1 F-13: --version / -v short-circuit before any other parsing.
+  maybePrintVersionAndExit(process.argv);
   const args = parseArgs(process.argv.slice(2));
   const apiKey = args['api-key'] || process.env.ANTHROPIC_API_KEY;
   const agentId = args['agent-id'];
