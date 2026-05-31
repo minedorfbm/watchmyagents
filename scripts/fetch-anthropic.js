@@ -29,6 +29,7 @@ import { Logger } from '../src/logger.js';
 import { TokenTracker } from '../src/tokens.js';
 import { SignalsAggregator } from '../src/anonymizer.js';
 import { resolveFortressBase, fortressEndpoint } from '../src/fortress/url.js';
+import { cleanLabel } from '../src/labels.js';
 import { isValidAgentId, isValidSessionId, assertSafePathSegment } from '../src/validate.js';
 import { classifyAgentType } from '../src/typology.js';
 import { aggregate, buildFeatures } from '../src/typology-features.js';
@@ -36,6 +37,7 @@ import {
   getAgent, listAgents, listSessions, fetchSessionEntries, fetchRawEvents,
   AnthropicManagedSource, effectiveEnforcementMode,
 } from '../src/sources/anthropic-managed.js';
+import { maybePrintVersionAndExit } from '../src/version.js';
 
 function parseArgs(argv) {
   const out = {};
@@ -73,9 +75,9 @@ function parseSince(s) {
 function die(msg, code = 1) { process.stderr.write(`${msg}\n`); process.exit(code); }
 function info(msg) { process.stdout.write(`[wma-fetch] ${msg}\n`); }
 function warn(msg) { process.stderr.write(`[wma-fetch] ⚠️  ${msg}\n`); }
-// Strip control chars + truncate a customer-set agent name before it goes into
-// a log line or the Fortress display_name (defense-in-depth vs log/payload injection).
-function cleanLabel(s) { return [...String(s ?? '')].filter((c) => c.charCodeAt(0) >= 32 && c.charCodeAt(0) !== 127).join('').slice(0, 60).trim(); }
+// v1.1.1 F-11: cleanLabel moved to src/labels.js so wma-upload-fortress
+// (and any future consumer) shares the exact same sanitization. Defense
+// in depth vs log/payload injection from customer-set agent names.
 
 function resolveModel(agent) {
   const raw = agent.model || agent.config?.model || null;
@@ -261,7 +263,7 @@ const sleep = (ms, signal) => new Promise((res) => {
 });
 
 // ── ONE-SHOT ──────────────────────────────────────────────────────────────
-async function fetchOneShot({ apiKey, agentId, model, logDir, since, sessionId, dumpRaw }) {
+async function fetchOneShot({ apiKey, agentId, model, logDir, since, sessionId, dumpRaw, forceDuplicates = false }) {
   let sessions;
   if (sessionId) {
     sessions = [{ id: sessionId, created_at: new Date().toISOString() }];
@@ -272,7 +274,18 @@ async function fetchOneShot({ apiKey, agentId, model, logDir, since, sessionId, 
   if (sessions.length === 0) { info('no sessions to fetch'); return; }
   info(`${sessions.length} session(s) to fetch`);
 
+  // v1.1.1 F-10 (P2 Codex audit): preload the entry ids already on disk for
+  // this agent so re-running the one-shot doesn't duplicate events. The
+  // watch daemon does this already; the one-shot was the missing piece.
+  // Operators who explicitly want the legacy duplicate-on-rerun behavior
+  // can opt back in with --force-duplicates.
+  const seenIds = forceDuplicates ? new Set() : await preloadSeenIds(logDir, agentId);
+  if (!forceDuplicates && seenIds.size > 0) {
+    info(`preloaded ${seenIds.size} known event id(s) for dedup`);
+  }
+
   let totalEntries = 0;
+  let totalSkipped = 0;
   for (const s of sessions) {
     const sid = s.id;
     process.stdout.write(`\n[wma-fetch] session ${sid}\n`);
@@ -288,23 +301,27 @@ async function fetchOneShot({ apiKey, agentId, model, logDir, since, sessionId, 
     const logger = new Logger({ logDir, agentId, sessionId: sid, silent: true });
     const tracker = new TokenTracker();
     let count = 0;
+    let skipped = 0;
     for await (const entry of fetchSessionEntries({ apiKey, agentId, sessionId: sid, model })) {
+      if (entry.id && seenIds.has(entry.id)) { skipped++; continue; }
       const written = await logger.write(entry);
+      if (entry.id) seenIds.add(entry.id);
       tracker.record(written);
       count++;
     }
+    totalSkipped += skipped;
     const stats = tracker.stats().total;
     await logger.write({
       action_type: 'session_end', provider: 'anthropic-managed', status: 'ok', model,
       session_tokens: { input: stats.input, output: stats.output, cache_read: stats.cache_read, cache_creation: stats.cache_creation, total: stats.sum },
       session_cost_usd: stats.cost_usd || null,
     });
-    process.stdout.write(`  entries     : ${count} (+1 session_end)\n`);
+    process.stdout.write(`  entries     : ${count} (+1 session_end)${skipped ? ` · ${skipped} skipped (dedup)` : ''}\n`);
     process.stdout.write(`  tokens      : in=${stats.input} out=${stats.output} cache_r=${stats.cache_read} cache_w=${stats.cache_creation}\n`);
     process.stdout.write(`  written to  : ${logger._pathForToday()}\n`);
     totalEntries += count + 1;
   }
-  process.stdout.write(`\n[wma-fetch] done — ${totalEntries} total entries across ${sessions.length} session(s)\n`);
+  process.stdout.write(`\n[wma-fetch] done — ${totalEntries} total entries across ${sessions.length} session(s)${totalSkipped ? `, ${totalSkipped} skipped (dedup)` : ''}\n`);
   process.stdout.write(`[wma-fetch] inspect with: npx wma-inspect ${logDir}\n`);
 }
 
@@ -441,6 +458,8 @@ async function runWatch({ apiKey, resolveAgents, fleet, logDir, intervalMs, wind
 }
 
 async function main() {
+  // v1.1.1 F-13: --version / -v short-circuit before any other parsing.
+  maybePrintVersionAndExit(process.argv);
   const args = parseArgs(process.argv.slice(2));
   const apiKey = args['api-key'] || process.env.ANTHROPIC_API_KEY;
   const agentId = args['agent-id'];
@@ -545,7 +564,7 @@ async function main() {
     info(`resolving agent ${agentId}…`);
     const agent = await getAgent(apiKey, agentId).catch((e) => die(`failed to GET agent: ${e.message}`));
     const since = args.since ? parseSince(args.since) : null;
-    await fetchOneShot({ apiKey, agentId, model: resolveModel(agent), logDir, since, sessionId: args['session-id'], dumpRaw: !!args['dump-raw'] });
+    await fetchOneShot({ apiKey, agentId, model: resolveModel(agent), logDir, since, sessionId: args['session-id'], dumpRaw: !!args['dump-raw'], forceDuplicates: !!args['force-duplicates'] });
   }
 }
 

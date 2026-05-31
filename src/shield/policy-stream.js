@@ -37,6 +37,13 @@ const RECONNECT_MIN_MS = 1_000;
 const RECONNECT_MAX_MS = 60_000;
 const FALLBACK_RETRY_INTERVAL_MS = 5 * 60_000;
 const PERMANENT_FAILURE_LOG_INTERVAL_MS = 5 * 60_000;
+// v1.1.1 F-9 (P2 Codex audit): hard cap on a single SSE event's buffer.
+// A buggy or compromised Fortress endpoint could stream bytes forever
+// without emitting the "\n\n" event separator, growing Shield's memory.
+// 1 MB is far above any legitimate `policy_changed` payload (the data
+// field carries {rule_id, action, ts, kind} = maybe 200 bytes) so we
+// abort the connection and reconnect on overflow.
+const MAX_SSE_EVENT_BYTES = 1 * 1024 * 1024;
 
 export class PolicyStream extends EventEmitter {
   constructor({ url, apiKey, anthropicAgentId, onError, onInfo }) {
@@ -147,6 +154,17 @@ export class PolicyStream extends EventEmitter {
       let buffer = '';
       res.on('data', (chunk) => {
         buffer += chunk;
+        // v1.1.1 F-9: cap on a single SSE event buffer. A buggy/compromised
+        // endpoint that never emits "\n\n" would otherwise OOM Shield.
+        // Abort + reconnect on overflow; the buffer is dropped so we
+        // restart fresh on the new connection.
+        if (buffer.length > MAX_SSE_EVENT_BYTES) {
+          this.onError(new Error(`policy-stream: SSE event exceeded ${MAX_SSE_EVENT_BYTES} bytes — aborting connection and reconnecting`));
+          buffer = '';
+          try { res.destroy(); } catch { /* already destroyed */ }
+          if (!this._closed) this._scheduleReconnect();
+          return;
+        }
         // SSE events are separated by a blank line ("\n\n").
         let eolIdx;
         while ((eolIdx = buffer.indexOf('\n\n')) !== -1) {

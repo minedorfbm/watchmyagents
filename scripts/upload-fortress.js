@@ -31,6 +31,8 @@ import { createInterface } from 'node:readline';
 import { SignalsAggregator } from '../src/anonymizer.js';
 import { resolveFortressBase, fortressEndpoint } from '../src/fortress/url.js';
 import { AnthropicManagedSource } from '../src/sources/anthropic-managed.js';
+import { cleanLabel } from '../src/labels.js';
+import { maybePrintVersionAndExit } from '../src/version.js';
 
 function parseArgs(argv) {
   const out = {};
@@ -99,13 +101,18 @@ function postJson(url, headers, body) {
 }
 
 async function main() {
+  // v1.1.1 F-13: --version / -v short-circuit before any other parsing.
+  maybePrintVersionAndExit(process.argv);
   const args = parseArgs(process.argv.slice(2));
 
   const agentId = args['agent-id'];
   const logDir = resolve(args['log-dir'] || './watchmyagents-logs');
   const apiKey = args['api-key'] || process.env.WMA_API_KEY;
   const salt = args.salt || process.env.WMA_SIGNALS_SALT;
-  const displayName = args['display-name'] || agentId;
+  // v1.1.1 F-11: sanitize the customer-supplied display name with the
+  // same cleanLabel used by the Watch daemon (defense-in-depth vs log
+  // injection / Fortress payload injection via control bytes).
+  const displayName = cleanLabel(args['display-name'] || agentId) || agentId;
   const dryRun = !!args['dry-run'];
 
   // Resolve Fortress base URL. Accepts:

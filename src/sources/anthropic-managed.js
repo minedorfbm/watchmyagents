@@ -326,6 +326,11 @@ export async function* fetchSessionEntries({ apiKey, agentId, sessionId, model }
         isMcp: type === 'agent.mcp_tool_use',
         input: ev.input ?? null,
         mcpServer: ev.server_name ?? ev.mcp_server_name ?? null,
+        // v1.1.1 F-8: capture sub-agent context at storage time so the
+        // end-of-session flush yields entries with the right attribution.
+        startTimestamp: ts,
+        session_thread_id,
+        agent_name,
       });
       continue;
     }
@@ -483,6 +488,37 @@ export async function* fetchSessionEntries({ apiKey, agentId, sessionId, model }
       continue;
     }
   }
+
+  // v1.1.1 F-8 (P1 Codex audit): flush remaining pendingToolUse entries
+  // as explicit "no_result_observed" tool_use events. These are tool
+  // calls that started (we saw agent.tool_use) but never produced a
+  // result (no agent.tool_result paired): most commonly because Shield
+  // pre-blocked them, the operator denied via tool_confirmation, the
+  // tool died mid-execution, or the session terminated before the
+  // result event arrived. For a security audit product, these incomplete
+  // calls are often the MOST useful signals — a blocked exfil attempt
+  // shows up here, not in successful tool_results. Yielding them
+  // explicitly with status='error' keeps the local NDJSON, anonymizer
+  // signals (counts, IoC hashes, tool_counts), and Fortress decisions
+  // honest about what actually happened.
+  for (const [toolUseId, pending] of pendingToolUse) {
+    yield {
+      ...base,
+      session_thread_id: pending.session_thread_id,
+      agent_name: pending.agent_name,
+      id: toolUseId,
+      action_type: pending.isMcp ? 'mcp_tool_use' : 'tool_use',
+      tool_name: pending.name,
+      model: model || null,
+      timestamp: pending.startTimestamp,
+      duration_ms: null,
+      status: 'error',
+      error: 'no_result_observed',
+      input: pending.input,
+      output: { mcp_server: pending.mcpServer ?? undefined },
+    };
+  }
+  pendingToolUse.clear();
 }
 
 // ────────────────────────────────────────────────────────────────────────
