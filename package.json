@@ -8,7 +8,7 @@
     "scripts/inspect.js",
     "scripts/fetch-anthropic.js",
     "scripts/shield.js",
-    "scripts/anonymize.js",
+    "scripts/signals.js",
     "scripts/upload-fortress.js",
     "scripts/service.js",
     "scripts/agents.js",
@@ -20,7 +20,7 @@
     "wma-inspect": "scripts/inspect.js",
     "wma-fetch": "scripts/fetch-anthropic.js",
     "wma-shield": "scripts/shield.js",
-    "wma-anonymize": "scripts/anonymize.js",
+    "wma-signals": "scripts/signals.js",
     "wma-upload-fortress": "scripts/upload-fortress.js",
     "wma-service": "scripts/service.js",
     "wma-agents": "scripts/agents.js"
@@ -30,7 +30,7 @@
     "inspect": "node scripts/inspect.js",
     "fetch": "node scripts/fetch-anthropic.js",
     "shield": "node scripts/shield.js",
-    "anonymize": "node scripts/anonymize.js",
+    "signals": "node scripts/signals.js",
     "upload-fortress": "node scripts/upload-fortress.js",
     "service": "node scripts/service.js",
     "agents": "node scripts/agents.js"

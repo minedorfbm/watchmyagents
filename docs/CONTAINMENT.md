@@ -166,7 +166,7 @@ These tests run on every commit (`node --test`). A regression flips one of them 
 ### Customer-side audit
 
 - Customers can run `tcpdump` on the egress interface of any WMA process to verify only Fortress URLs are reached.
-- The `wma-anonymize --dry-run` CLI lets customers preview *exactly* what would be sent to Fortress before they enable upload.
+- The `wma-signals --dry-run` CLI lets customers preview *exactly* what would be sent to Fortress before they enable upload.
 - The signals payload schema is documented in the README + this file; customers can write their own egress filter (e.g., a forward proxy) to validate by structure.
 
 ### Fortress-side guarantee

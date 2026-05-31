@@ -1,9 +1,15 @@
 #!/usr/bin/env node
-// wma-anonymize — produce the anonymized signals payload that Watch would
-// send to Fortress, for inspection / verification.
+// wma-signals — build the signals payload that Watch would send to
+// Fortress, for inspection / verification.
+//
+// (Renamed from `wma-anonymize` in v1.0.1. The script's job is to PRODUCE
+//  the signals payload; anonymization is a property of that payload,
+//  guaranteed by the underlying SignalsAggregator. The new name aligns
+//  with the rest of the product vocabulary: SignalsAggregator,
+//  ingest-signals Edge Function, signals.payload shape.)
 //
 // Usage:
-//   wma-anonymize <path-to-ndjson-or-dir> [--salt <hex>] [--out <file>]
+//   wma-signals <path-to-ndjson-or-dir> [--salt <hex>] [--out <file>]
 //
 // The `--salt` argument MUST be a stable per-customer secret. Using a
 // random salt each run means hashes won't correlate across runs (useless
@@ -56,11 +62,11 @@ async function main() {
   const args = parseArgs(process.argv.slice(2));
 
   if (!args._target) {
-    die(`usage: wma-anonymize <path> [--salt <hex>] [--out <file>]
+    die(`usage: wma-signals <path> [--salt <hex>] [--out <file>]
 
-Reads Watch NDJSON logs and produces the anonymized signals payload
-that would be sent to Fortress. Use this to inspect exactly what
-leaves your machine BEFORE any upload feature is enabled.
+Builds the signals payload that Watch would send to Fortress, from
+local NDJSON logs. Use this to inspect exactly what leaves your
+machine BEFORE any upload feature is enabled.
 
 Required: --salt <hex> or WMA_SIGNALS_SALT env var (per-customer secret).
 If you don't have one, generate: node -e "console.log(require('crypto').randomBytes(16).toString('hex'))"
@@ -73,8 +79,8 @@ and save it in .env.local.`);
         '       generate one with: node -e "console.log(require(\'crypto\').randomBytes(16).toString(\'hex\'))"');
   }
   if (args.salt) {
-    process.stderr.write('[wma-anonymize] warning: --salt on the command line is visible in shell history.\n' +
-                         '                Prefer: export WMA_SIGNALS_SALT=...\n');
+    process.stderr.write('[wma-signals] warning: --salt on the command line is visible in shell history.\n' +
+                         '              Prefer: export WMA_SIGNALS_SALT=...\n');
   }
   if (salt.length < 16) {
     die('error: salt too short (need ≥16 hex chars / ≥8 bytes of entropy)');
@@ -102,7 +108,7 @@ and save it in .env.local.`);
   const json = JSON.stringify(signals, null, 2);
   if (args.out) {
     await writeFile(resolve(args.out), json + '\n', { encoding: 'utf8', mode: 0o600 });
-    process.stderr.write(`[wma-anonymize] wrote ${args.out} (${signals._meta.entries_processed} entries processed)\n`);
+    process.stderr.write(`[wma-signals] wrote ${args.out} (${signals._meta.entries_processed} entries processed)\n`);
   } else {
     process.stdout.write(json + '\n');
   }

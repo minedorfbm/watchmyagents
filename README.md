@@ -127,13 +127,13 @@ wma-fetch (--agent-id <agent_id> | --all-agents) [--session-id <sess_id>] [--sin
 
 Logs land in `./watchmyagents-logs/<agent_id>/<date>.ndjson` (file mode `0600`, dir `0700`).
 
-### `wma-anonymize` — preview what would leave your machine
+### `wma-signals` — preview what would leave your machine
 
 Produces the anonymized signals payload (counts, latencies, salted IoC hashes, sequence histograms — no raw URLs/commands/prompts) that future WMA cloud features would ship. Useful to verify Containment compliance and to test the format.
 
 ```bash
 export WMA_SIGNALS_SALT="$(node -e 'console.log(require("crypto").randomBytes(16).toString("hex"))')"
-wma-anonymize ./watchmyagents-logs
+wma-signals ./watchmyagents-logs
 # → JSON on stdout. Add --out signals.json to write to file.
 ```
 
@@ -146,7 +146,7 @@ Anonymizes your local NDJSON and POSTs the resulting payload to the WMA Fortress
 ```bash
 export WMA_API_KEY="wma_..."                    # from Fortress dashboard → Settings → API Keys
 export WMA_FORTRESS_URL="https://<your-project>.supabase.co/functions/v1/ingest-signals"
-export WMA_SIGNALS_SALT="..."                   # same salt as wma-anonymize
+export WMA_SIGNALS_SALT="..."                   # same salt as wma-signals
 
 wma-upload-fortress --agent-id agent_01ABC... [--display-name "My agent"]
 # → POSTs the anonymized payload. Server returns signal_id + agent_id.
@@ -155,7 +155,7 @@ wma-upload-fortress --agent-id agent_01ABC... [--display-name "My agent"]
 wma-upload-fortress --agent-id agent_xxx --dry-run
 ```
 
-**What is sent:** the anonymized signals payload (counts, latencies, salted IoC hashes, sequences — same as `wma-anonymize` output), the agent's **`classification`** when the daemon has it (`{agent_type, confidence, stage}` — anonymized metadata, never raw content), **plus the routing identifiers**: `provider` (e.g., `"anthropic-managed"` — added in v1.0 for the multi-framework SDK), `native_agent_id` (the canonical provider-agnostic field), `anthropic_agent_id` (kept for backwards compat with existing Fortress instances; will be dropped once Fortress migrates), `parent_agent_id` (`null` for root agents — populated for sub-agents detected via OpenAI Agents handoffs, CrewAI manager mode, Hermes Agent `spawn_subagent`, LangGraph sub-graphs), `composition_pattern` (`"solo" | "hierarchy" | "graph" | "peer"` — defaults to `"solo"` for Anthropic until thread-message detection lands), `enforcement_mode` (`"sync_confirm" | "sync_interrupt" | "detect_only"` — the strongest enforcement capability the Source provides; Fortress greys out Shield UI for `detect_only` agents to prevent UI/runtime mismatch), and a `display_name`. The agent id is required so Fortress can associate signals with the right agent; `display_name` defaults to the **human-readable agent name** (sanitized to strip control chars) for UX in the dashboard — pass `--no-send-agent-names` to keep it pseudonymized (sends the agent id instead) if your agent names themselves carry sensitive client/project info.
+**What is sent:** the anonymized signals payload (counts, latencies, salted IoC hashes, sequences — same as `wma-signals` output), the agent's **`classification`** when the daemon has it (`{agent_type, confidence, stage}` — anonymized metadata, never raw content), **plus the routing identifiers**: `provider` (e.g., `"anthropic-managed"` — added in v1.0 for the multi-framework SDK), `native_agent_id` (the canonical provider-agnostic field), `anthropic_agent_id` (kept for backwards compat with existing Fortress instances; will be dropped once Fortress migrates), `parent_agent_id` (`null` for root agents — populated for sub-agents detected via OpenAI Agents handoffs, CrewAI manager mode, Hermes Agent `spawn_subagent`, LangGraph sub-graphs), `composition_pattern` (`"solo" | "hierarchy" | "graph" | "peer"` — defaults to `"solo"` for Anthropic until thread-message detection lands), `enforcement_mode` (`"sync_confirm" | "sync_interrupt" | "detect_only"` — the strongest enforcement capability the Source provides; Fortress greys out Shield UI for `detect_only` agents to prevent UI/runtime mismatch), and a `display_name`. The agent id is required so Fortress can associate signals with the right agent; `display_name` defaults to the **human-readable agent name** (sanitized to strip control chars) for UX in the dashboard — pass `--no-send-agent-names` to keep it pseudonymized (sends the agent id instead) if your agent names themselves carry sensitive client/project info.
 **What is NOT sent:** raw prompts, raw URLs/commands/queries, raw agent responses, raw error messages. All payload content stays on your machine.
 
 The endpoint auto-registers the agent on the first upload if it doesn't exist in Fortress yet — no manual onboarding needed for new agents.
