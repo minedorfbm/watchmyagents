@@ -287,6 +287,12 @@ wma-shield --agent-id agent_xxx --policies-source fortress
 
 In Fortress mode, Shield also POSTs each enforcement decision back to Fortress (`/functions/v1/ingest-decisions`), so the dashboard's live timeline + Loop Visualizer light up in real time.
 
+### Realtime policy propagation (v1.1.0+)
+
+When you accept a Guardian suggestion or deploy a manual rule in the Fortress dashboard, Shield is notified within ~100ms via a persistent Server-Sent Events (SSE) connection to `/functions/v1/policies-stream` and refreshes its ruleset immediately. Shield falls back gracefully to its 60s polling cadence if the SSE endpoint isn't deployed yet on your Fortress instance (HTTP 404), so the SDK ships safely either way.
+
+Why SSE (not WebSocket): zero runtime dependencies preserved (HTTPS = Node built-in), firewall-friendly (many enterprise proxies block raw WS but pass `text/event-stream` cleanly), and the protocol is one-way push-only — exactly what we need.
+
 ### Enforcement mode auto-detection
 
 Shield auto-detects the best mode at startup:
