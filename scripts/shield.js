@@ -35,7 +35,8 @@ import {
 import { DecisionLogger } from '../src/shield/decisions.js';
 import { listSessions, listAgents } from '../src/sources/anthropic-managed.js';
 import { FortressPolicySource, postDecision } from '../src/shield/sources/fortress.js';
-import { resolveFortressBase } from '../src/fortress/url.js';
+import { resolveFortressBase, fortressEndpoint } from '../src/fortress/url.js';
+import { PolicyStream } from '../src/shield/policy-stream.js';
 import { isValidAgentId, isValidSessionId } from '../src/validate.js';
 
 function parseArgs(argv) {
@@ -482,9 +483,11 @@ async function main() {
   // Shared infra: one shutdown signal, one fortress-source registry, one pusher.
   const ac = new AbortController();
   const fortressSources = [];
+  const fortressStreams = [];  // v1.1.0 Phase 2 PolicyStream instances
   const shutdown = (sig) => {
     info(`${sig} received, shutting down…`);
     for (const fp of fortressSources) fp.stop();
+    for (const ps of fortressStreams) ps.close();
     ac.abort();
   };
   process.on('SIGINT',  () => shutdown('SIGINT'));
@@ -524,6 +527,27 @@ async function main() {
         die(`error fetching policies from Fortress: ${e.message}\n       Check WMA_FORTRESS_BASE_URL and WMA_API_KEY.`);
       }
       fortressSources.push(fortressPolicies);
+      // v1.1.0 Phase 2: persistent SSE connection to Fortress for instant
+      // policy updates (~100ms latency vs 60s poll). Falls back silently
+      // when the /policies-stream endpoint isn't deployed yet (HTTP 404),
+      // so the SDK ships safely even if the companion Lovable prompt
+      // hasn't landed on a given Fortress instance.
+      const streamUrl = fortressEndpoint(fortressBase, 'policies-stream');
+      const policyStream = new PolicyStream({
+        url: streamUrl,
+        apiKey: wmaApiKey,
+        anthropicAgentId: aid,
+        onError: (e) => warn(`${tag}policy-stream: ${e.message}`),
+        onInfo: (msg) => info(`${tag}${msg}`),
+      });
+      policyStream.on('policy_changed', () => {
+        // Fortress pushed a policy change for this agent — trigger an
+        // immediate refresh through the standard path so all the existing
+        // compile/validation logic applies.
+        fortressPolicies.refresh().catch((e) => warn(`${tag}stream-triggered refresh failed: ${e.message}`));
+      });
+      policyStream.start();
+      fortressStreams.push(policyStream);
       ruleset = fortressPolicies.current();
     }
 

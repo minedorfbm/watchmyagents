@@ -148,6 +148,17 @@ export class FortressPolicySource {
     return this.ruleset;
   }
 
+  /**
+   * Public refresh hook for out-of-band triggers — e.g. the v1.1.0 SSE
+   * PolicyStream fires this when Fortress pushes a policy_changed event,
+   * collapsing the up-to-60s polling latency to ~100ms.
+   * Safe to call concurrently with the internal interval timer: each
+   * call only performs a single network round-trip.
+   */
+  async refresh() {
+    return this._refresh();
+  }
+
   async _refresh({ initial = false } = {}) {
     if (this._aborted) return;
     try {
