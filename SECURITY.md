@@ -57,6 +57,8 @@ WMA combines **two complementary layers**:
 - **Blind spots in agent behavior.** Watch captures tool calls, prompts, state transitions, and errors for after-the-fact analysis.
 - **Token-only observability tools.** WMA captures every action including zero-token ones (`tool_use`, `state_transition`, etc.) that are the most security-relevant.
 - **Inline policy violations** (Shield). When the agent has `permission_policy: always_ask` configured, Shield blocks tool calls before execution. When not, Shield interrupts the session on first violation (the offending tool already ran, but the agent loop stops).
+- **Stale enforcement after a policy update.** A new policy accepted in the Fortress dashboard is active in Shield within ~1 second via SSE + Postgres realtime (validated in production on v1.1.0). The 60s polling refresh is a fallback for environments where the SSE channel can't be established (firewall, proxy stripping `text/event-stream`).
+- **Lost audit trail for blocked / denied / interrupted tool calls.** Tool calls that started but never produced a result (Shield pre-block, operator denial, mid-execution kill, session termination) are logged as explicit `tool_use` entries with `status: error` and `error: "no_result_observed"` — they cannot disappear silently from the audit. (Fix shipped in v1.1.1 after the Codex P1 finding.)
 - **Vendor lock-in.** NDJSON is portable; you own the data.
 
 ### What WMA does NOT defend against

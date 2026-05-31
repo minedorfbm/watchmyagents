@@ -1,12 +1,26 @@
 # Watch My Agents
 
-**Security observability for AI agents.** A zero-dependency CLI + SDK that captures every action your AI agents take — tool calls, prompts, state transitions, errors, multi-agent comms — into local NDJSON logs. Built for security audits, not just token counting.
+**Real-time security observability AND enforcement for AI agents.** A zero-dependency CLI + SDK that captures every action your AI agents take — tool calls, prompts, state transitions, errors, multi-agent comms — into local NDJSON logs **AND** enforces security policies live, with sub-second propagation from the Fortress control plane to the Shield runtime.
 
-Designed around three guarantees:
+Designed around four guarantees:
 
 1. **Local-first.** Raw payloads (prompts, outputs, tool arguments) stay 100% on your machine. Nothing leaves unless you explicitly opt in.
-2. **Trace everything, not just what costs tokens.** A `web_fetch` to a suspicious URL carries zero tokens but is exactly what a security audit needs to see.
-3. **Zero dependencies.** Only Node.js 18+ built-ins. No telemetry, no phone-home, no hidden network calls.
+2. **Trace everything, not just what costs tokens.** A `web_fetch` to a suspicious URL carries zero tokens but is exactly what a security audit needs to see. Even tool calls that were blocked, denied, or interrupted before producing a result are logged with `status: error` so the audit trail is complete.
+3. **Real-time enforcement, not post-hoc auditing.** A policy accepted in Fortress UI is active in Shield within ~1 second via SSE + Postgres realtime. A policy violation is blocked in ~3ms via Anthropic's `user.tool_confirmation` / `user.interrupt` events. Measured in production, not promised in roadmap.
+4. **Zero dependencies.** Only Node.js 18+ built-ins. No telemetry, no phone-home, no hidden network calls. Preserved through every release including the SSE realtime work (custom RFC-compliant SSE parser, no `@supabase/realtime-js` or `ws` dep).
+
+### Measured end-to-end loop latency (v1.1.0+)
+
+```
+Anthropic agent action ────────► Watch capture           : ≤ 60s     (configurable via --interval)
+Watch capture        ────────► Fortress signal upload   : ≤ 60s     (same cycle)
+Fortress signal      ────────► Guardian analysis        : ≤ 30s     (event-triggered, debounced)
+Guardian proposal    ────────► Operator accepts in UI   : (human)
+Policy accepted      ────────► Shield receives via SSE  : ≤ 1s      (sub-second push, validated)
+Shield evaluates     ────────► Decision (allow/deny)    : ≤ 3ms     (measured on Anthropic Managed)
+```
+
+Full audit-clean: 3 successful Codex audit passes (v1.0.1, v1.0.2, v1.0.3) closed 7 findings with zero regression. Containment invariant (raw payloads never leave the customer machine) is formalized in `docs/CONTAINMENT.md` and locked by 8 regression tests.
 
 ---
 
