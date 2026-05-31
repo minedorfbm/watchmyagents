@@ -37,6 +37,27 @@ const HASHABLE_INPUT_FIELDS = ['url', 'query', 'command', 'path', 'file_path'];
 // Tool types whose inputs we want to hash for IoC tracking
 const TOOL_ACTIONS = new Set(['tool_use', 'mcp_tool_use', 'custom_tool_use']);
 
+// Well-known vendor built-in tool names that are SAFE to keep in clear in the
+// signals payload. They are documented by the vendor, common across customers,
+// and the operator NEEDS them legible in the dashboard ("3 web_search calls
+// in 10 minutes" is the actionable signal). Anything not on this list is
+// considered customer-controlled (custom tool, MCP tool with a customer-chosen
+// name like "client_acme_export") and gets hashed before egress.
+//
+// To add a built-in: only confirmed-public-by-vendor names — never speculative
+// matches. When in doubt, hash.
+const WELL_KNOWN_TOOLS = new Set([
+  // Anthropic Managed Agents
+  'web_search', 'web_fetch', 'bash', 'code_execution',
+  'str_replace_editor', 'str_replace_based_edit_tool',
+  'computer', 'computer_use_20250124', 'computer_use_20241022',
+  'text_editor', 'text_editor_20250124', 'text_editor_20241022',
+  // OpenAI Agents / Responses
+  'web_search_preview', 'file_search', 'computer_use_preview', 'code_interpreter',
+  // Common framework primitives
+  'function', 'retrieval',
+]);
+
 // ── Hash helpers ─────────────────────────────────────────────────────────
 
 /**
@@ -54,6 +75,30 @@ export function hashWithSalt(value, salt) {
 // Generate a customer salt (if none provided)
 export function generateSalt() {
   return randomBytes(16).toString('hex');
+}
+
+// ── Tool name normalization (Containment hardening, v1.0.1 F-3) ────────
+
+/**
+ * Return the canonical tool-name token that's safe to ship to Fortress.
+ *
+ * - For documented vendor built-ins (WELL_KNOWN_TOOLS) the name is kept
+ *   in clear so dashboards and Guardian policies can reason about the
+ *   tool by its public identifier.
+ * - For anything else (customer-defined functions, MCP tools whose name
+ *   is set by the customer's MCP server, e.g. "client_acme_export"),
+ *   the name is salted-SHA256-hashed with a `tool_hash:` prefix so it
+ *   cannot leak project/client identifiers.
+ *
+ * Empty / null tool names return null.
+ */
+export function normalizeToolName(toolName, salt) {
+  if (toolName == null) return null;
+  const s = String(toolName);
+  if (s.length === 0) return null;
+  if (WELL_KNOWN_TOOLS.has(s)) return s;
+  if (!salt) throw new Error('normalizeToolName requires a salt to hash custom tool names');
+  return 'tool_hash:' + createHash('sha256').update(salt).update(s).digest('hex').slice(0, 32);
 }
 
 // ── Single-entry extractor: what hashable IoCs are in this entry? ────────
@@ -115,15 +160,21 @@ export class SignalsAggregator {
     this._prevActionType = at;
     this._prevSessionId = entry.session_id || null;
 
-    // Tools
+    // Tools — Containment (v1.0.1 F-3): well-known vendor built-ins keep
+    // their public name; customer-defined / MCP tool names get hashed so
+    // no client-identifying string ("client_acme_export") leaks via the
+    // tool_counts / tool_latencies / error_rate maps.
     if (entry.tool_name && TOOL_ACTIONS.has(at)) {
-      this.toolCounts[entry.tool_name] = (this.toolCounts[entry.tool_name] || 0) + 1;
-      if (entry.status === 'error') {
-        this.toolErrors[entry.tool_name] = (this.toolErrors[entry.tool_name] || 0) + 1;
-      }
-      if (typeof entry.duration_ms === 'number') {
-        if (!this.toolLatencies[entry.tool_name]) this.toolLatencies[entry.tool_name] = [];
-        this.toolLatencies[entry.tool_name].push(entry.duration_ms);
+      const toolKey = normalizeToolName(entry.tool_name, this.salt);
+      if (toolKey) {
+        this.toolCounts[toolKey] = (this.toolCounts[toolKey] || 0) + 1;
+        if (entry.status === 'error') {
+          this.toolErrors[toolKey] = (this.toolErrors[toolKey] || 0) + 1;
+        }
+        if (typeof entry.duration_ms === 'number') {
+          if (!this.toolLatencies[toolKey]) this.toolLatencies[toolKey] = [];
+          this.toolLatencies[toolKey].push(entry.duration_ms);
+        }
       }
       // Extract & hash IoCs from this tool's input
       for (const h of extractIocs(entry, this.salt)) this.iocHashes.add(h);

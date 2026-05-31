@@ -14,7 +14,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { SignalsAggregator, hashWithSalt } from '../src/anonymizer.js';
+import { SignalsAggregator, hashWithSalt, normalizeToolName } from '../src/anonymizer.js';
 
 // Distinctive sentinel strings chosen so a substring match would never
 // false-positive against legitimate signals payload content.
@@ -150,4 +150,77 @@ test('Containment: signals payload shape contains only the documented keys', () 
 test('Containment: SignalsAggregator refuses to operate without a salt', () => {
   assert.throws(() => new SignalsAggregator({}), /salt/);
   assert.throws(() => new SignalsAggregator(), /salt/);
+});
+
+// ── F-3 (Codex audit): tool_name Containment ────────────────────────────
+
+test('Containment F-3: custom tool names are hashed before egress', () => {
+  // Customer-defined tool name that could carry client/project identifiers.
+  // The Codex audit example was literally `client_acme_export`.
+  const CUSTOM_TOOL = 'client_acme_export_v2_MARKER';
+
+  const agg = new SignalsAggregator({ salt: SALT });
+  agg.add(syntheticEvent({
+    tool_name: CUSTOM_TOOL,
+    duration_ms: 250,
+  }));
+  agg.add(syntheticEvent({
+    id: 'evt_2',
+    tool_name: CUSTOM_TOOL,
+    status: 'error',
+    duration_ms: 100,
+  }));
+  const out = agg.finalize();
+  const serialized = JSON.stringify(out);
+
+  // The raw custom name MUST NOT appear anywhere — not as a key, not as
+  // a value, not as part of a longer string.
+  assert.ok(
+    !serialized.includes(CUSTOM_TOOL),
+    `Containment leak: custom tool name "${CUSTOM_TOOL}" found in signals output`,
+  );
+
+  // The expected hashed token should be present — proves the activity was
+  // captured WITHOUT revealing the underlying name.
+  const expected = normalizeToolName(CUSTOM_TOOL, SALT);
+  assert.match(expected, /^tool_hash:[a-f0-9]{32}$/, 'hash token has the documented shape');
+  assert.ok(
+    serialized.includes(expected),
+    `expected hashed token ${expected} not present in signals output`,
+  );
+
+  // And the counts/error_rate/latency maps must be keyed by the hashed
+  // token, not by the raw name.
+  assert.ok(expected in out.payload.tool_counts, 'tool_counts is keyed by hashed name');
+  assert.ok(expected in out.payload.error_rate_by_tool, 'error_rate_by_tool is keyed by hashed name');
+  assert.ok(expected in out.payload.latencies_p50_ms, 'latencies_p50_ms is keyed by hashed name');
+});
+
+test('Containment F-3: well-known vendor built-ins are KEPT in clear (dashboard legibility)', () => {
+  // The whitelist is a feature, not a bug: operators must see
+  // "web_search" or "bash" in plain text to act on the signals.
+  const agg = new SignalsAggregator({ salt: SALT });
+  agg.add(syntheticEvent({ tool_name: 'web_search', duration_ms: 50 }));
+  agg.add(syntheticEvent({ id: 'evt_2', tool_name: 'bash', duration_ms: 30 }));
+  agg.add(syntheticEvent({ id: 'evt_3', tool_name: 'code_execution', duration_ms: 200 }));
+  const out = agg.finalize();
+
+  for (const builtin of ['web_search', 'bash', 'code_execution']) {
+    assert.ok(builtin in out.payload.tool_counts,
+      `well-known built-in "${builtin}" should be kept in clear in tool_counts`);
+  }
+});
+
+test('Containment F-3: normalizeToolName is deterministic for the same (name, salt)', () => {
+  const a = normalizeToolName('custom_unknown_tool', SALT);
+  const b = normalizeToolName('custom_unknown_tool', SALT);
+  assert.equal(a, b, 'tool_hash must be deterministic so cross-window aggregation works');
+  assert.ok(a.startsWith('tool_hash:'));
+});
+
+test('Containment F-3: normalizeToolName refuses to operate without salt on unknown tools', () => {
+  // Well-known names need no salt (they are returned as-is).
+  assert.equal(normalizeToolName('web_search', null), 'web_search');
+  // Unknown names without salt would leak the raw name silently — refuse.
+  assert.throws(() => normalizeToolName('custom_unknown_tool', null), /salt/);
 });
