@@ -17,7 +17,7 @@
 
 import { request } from 'node:https';
 import { URLSearchParams } from 'node:url';
-import { Source, PROVIDERS, ENFORCEMENT_MODES, ACTION_TYPES } from './contract.js';
+import { Source, PROVIDERS, ENFORCEMENT_MODES, ACTION_TYPES, COMPOSITION_PATTERNS } from './contract.js';
 import {
   getAgentConfig, detectAlwaysAsk,
   confirmAllow, confirmDeny, interruptSession,
@@ -188,6 +188,25 @@ export async function* fetchSessionEntries({ apiKey, agentId, sessionId, model }
   const pendingModelReq = new Map();    // span.model_request_start.id → ts
   const pendingToolUse = new Map();     // agent.tool_use.id → { ts, name, isMcp, input }
 
+  // v1.1.3 Phase 1.C — Anthropic sub-agent detection.
+  // Anthropic Task tool: when a parent agent delegates, a NEW thread is
+  // spawned within the parent's session (`session.thread_created` event).
+  // Subsequent events with that session_thread_id belong to the sub-agent.
+  // We track the set of "spawned" thread ids and, for each event, set
+  // composition_pattern='hierarchy' if it happened inside a sub-thread.
+  //
+  // Important Anthropic-specific design note: the sub-agent does NOT have
+  // a separate agent_id at the Anthropic API level — it runs inside the
+  // parent's session and its actions are attributed to the parent's
+  // agent_id. So `parent_agent_id` STAYS NULL for all events of this
+  // session (the sub-agent shares identity with the parent). Operators
+  // who want per-sub-agent visibility use the local NDJSON's
+  // `session_thread_id` + `agent_name` discriminators (captured since
+  // v1.0.2 F-6a) to differentiate. Other adapters (OpenAI handoffs,
+  // CrewAI manager, Hermes spawn_subagent) where sub-agents DO have
+  // distinct API-level IDs will populate parent_agent_id natively.
+  const subThreadIds = new Set();
+
   // `provider` is the canonical field per src/sources/contract.js (no
   // other consumer ever read the previous `framework` field, so it was
   // dropped in PR-B with zero downstream impact).
@@ -211,7 +230,16 @@ export async function* fetchSessionEntries({ apiKey, agentId, sessionId, model }
     // Preserved LOCALLY (NDJSON) only — never sent raw to Fortress.
     const session_thread_id = ev.session_thread_id ?? null;
     const agent_name = ev.agent_name ?? null;
-    const subAgentMeta = { session_thread_id, agent_name };
+    // v1.1.3 Phase 1.C: derive composition_pattern at event level.
+    // Sub-thread events (session_thread_id registered in subThreadIds via
+    // a prior session.thread_created) → hierarchy. Root-thread events
+    // OR events without thread_id → solo. The aggregator in uploadSignals
+    // upgrades the AGENT-level composition_pattern to "hierarchy" when
+    // any event in the window is non-solo, so even pre-spawn root events
+    // contribute correctly to the agent's overall classification.
+    const inSubThread = session_thread_id != null && subThreadIds.has(session_thread_id);
+    const composition_pattern = inSubThread ? COMPOSITION_PATTERNS.HIERARCHY : COMPOSITION_PATTERNS.SOLO;
+    const subAgentMeta = { session_thread_id, agent_name, composition_pattern };
     const tsMillis = tsMs(ev);
 
     if (type === 'span.model_request_start') {
@@ -447,6 +475,14 @@ export async function* fetchSessionEntries({ apiKey, agentId, sessionId, model }
     }
 
     if (type === 'session.thread_created') {
+      // v1.1.3 Phase 1.C: register the newly-spawned thread as a sub-thread
+      // BEFORE yielding so subsequent events with this session_thread_id are
+      // correctly marked composition_pattern='hierarchy'. The thread_created
+      // event itself is yielded with the pattern computed before this line —
+      // it's the PARENT's act of spawning, so 'solo' is correct here (the
+      // parent did this act in its own context); only the events that
+      // FOLLOW inside the new thread get 'hierarchy'.
+      if (ev.session_thread_id) subThreadIds.add(ev.session_thread_id);
       yield {
         ...base,
         ...subAgentMeta,
