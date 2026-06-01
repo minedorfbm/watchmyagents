@@ -14,6 +14,15 @@ import { URL } from 'node:url';
 import { fortressEndpoint } from '../../fortress/url.js';
 
 const DEFAULT_TIMEOUT_MS = 15_000;
+// v1.1.2 F-17 (P3 Codex audit): cap on the total bytes we'll accumulate
+// for a Fortress JSON response before aborting the request. A misconfigured
+// or compromised endpoint streaming an unbounded body would otherwise
+// exhaust Shield's memory, despite the HTTPS-only + timeout guards.
+// 8 MB is far above the realistic ceiling for a customer's policy ruleset
+// (hundreds of policies × ~1 KB each → ~hundreds of KB). On overflow we
+// destroy the request, which propagates to onError + cached-ruleset
+// fallback.
+const MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
 
 function httpsJson(method, url, headers, body, timeoutMs = DEFAULT_TIMEOUT_MS) {
   return new Promise((resolveReq, rejectReq) => {
@@ -35,8 +44,23 @@ function httpsJson(method, url, headers, body, timeoutMs = DEFAULT_TIMEOUT_MS) {
     };
     const req = httpsRequest(opts, (res) => {
       const chunks = [];
-      res.on('data', (c) => chunks.push(c));
+      let receivedBytes = 0;
+      let aborted = false;
+      res.on('data', (c) => {
+        if (aborted) return;
+        receivedBytes += c.length;
+        if (receivedBytes > MAX_RESPONSE_BYTES) {
+          aborted = true;
+          // Free anything we already buffered, then tear down the request.
+          chunks.length = 0;
+          try { req.destroy(); } catch { /* already destroyed */ }
+          rejectReq(new Error(`Fortress response exceeded ${MAX_RESPONSE_BYTES} bytes — aborting (received ${receivedBytes} so far)`));
+          return;
+        }
+        chunks.push(c);
+      });
       res.on('end', () => {
+        if (aborted) return;
         const raw = Buffer.concat(chunks).toString('utf8');
         let parsed = null;
         try { parsed = raw ? JSON.parse(raw) : null; } catch { /* keep raw */ }
@@ -179,6 +203,17 @@ export class FortressPolicySource {
           this.onError(new Error(`skipping invalid Fortress policy "${p?.rule_id || p?.name || '?'}": ${e.message}`));
         }
       }
+      // v1.1.2 F-15 (P2 Codex audit): the policy evaluator is "first match
+      // wins" (src/shield/policy.js evaluate()), so policy order matters.
+      // Fortress validates `priority` server-side, but the API does not
+      // contractually guarantee that the returned array is sorted by
+      // priority. If a wide "allow" rule sat before a higher-priority
+      // "deny" rule in the response, the deny would never fire. Sort
+      // client-side by descending priority (higher priority first) before
+      // assigning to ruleset. Policies without `priority` (or with equal
+      // priorities) keep their relative order via the stable sort
+      // guarantee in V8 — predictable behavior.
+      compiled.sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0));
       this.ruleset = {
         version: 1,
         policies: compiled,

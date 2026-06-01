@@ -32,13 +32,27 @@ export async function loadPolicies(path) {
     throw new Error(`policy file ${path} has no "policies" array`);
   }
   // Pre-compile regex for performance + early failure on bad patterns.
+  const VALID_ACTIONS = ['allow', 'deny', 'interrupt'];
   for (const p of data.policies) {
     compileMatchRegexes(p.match || {});
-    if (!['allow', 'deny', 'interrupt'].includes(p.action)) {
+    if (!VALID_ACTIONS.includes(p.action)) {
       throw new Error(`policy ${p.id || p.name}: unsupported action "${p.action}"`);
     }
   }
+  // v1.1.2 F-14 (P2 Codex audit): validate the ruleset's default.action
+  // against the SAME canonical set as per-policy actions. Before this fix
+  // a typo like `default: { action: "drop" }` was accepted silently — at
+  // evaluation time evaluate() returned `decision: "drop"`, which the
+  // interrupt-mode runtime treated as a no-op (only deny/interrupt trigger
+  // termination) and the tool_confirmation-mode runtime left dangling
+  // (no allow/deny event sent). Either way the agent ran without
+  // enforcement, exactly opposite of the operator's intent.
   data.default = data.default || { action: 'allow' };
+  if (!VALID_ACTIONS.includes(data.default.action)) {
+    throw new Error(
+      `policy file ${path} default.action "${data.default.action}" is invalid — must be one of: ${VALID_ACTIONS.join(', ')}`,
+    );
+  }
   return data;
 }
 
