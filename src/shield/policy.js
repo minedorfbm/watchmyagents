@@ -33,10 +33,22 @@ export async function loadPolicies(path) {
   }
   // Pre-compile regex for performance + early failure on bad patterns.
   const VALID_ACTIONS = ['allow', 'deny', 'interrupt'];
+  // v1.1.3 Phase 1.D — policy mode: 'enforce' (default) actually enforces
+  // the decision via the Anthropic API; 'shadow' computes the decision
+  // and logs it but skips enforcement. Shadow is the calibration bench
+  // for Guardian Core scoring (Platt scaling, diff-in-diff efficacy)
+  // and a safe staging step for new policies before promoting to enforce.
+  const VALID_MODES = ['enforce', 'shadow'];
   for (const p of data.policies) {
     compileMatchRegexes(p.match || {});
     if (!VALID_ACTIONS.includes(p.action)) {
       throw new Error(`policy ${p.id || p.name}: unsupported action "${p.action}"`);
+    }
+    // Default to 'enforce' if mode is omitted → preserves v1.0.x / v1.1.x
+    // behavior for policies authored before shadow mode existed.
+    if (p.mode == null) p.mode = 'enforce';
+    if (!VALID_MODES.includes(p.mode)) {
+      throw new Error(`policy ${p.id || p.name}: unsupported mode "${p.mode}" (must be one of: ${VALID_MODES.join(', ')})`);
     }
   }
   // v1.1.2 F-14 (P2 Codex audit): validate the ruleset's default.action
@@ -157,6 +169,10 @@ export function evaluate(event, ruleset) {
         rule_id: policy.id || null,
         rule_name: policy.name || null,
         message: policy.message || null,
+        // v1.1.3 Phase 1.D — `mode` propagated so the Shield runtime can
+        // decide whether to actually call the Anthropic enforcement API
+        // (mode=enforce) or just log the would-be decision (mode=shadow).
+        mode: policy.mode || 'enforce',
       };
     }
   }
@@ -165,5 +181,8 @@ export function evaluate(event, ruleset) {
     rule_id: null,
     rule_name: '(default)',
     message: null,
+    // The ruleset-level default has no shadow concept — defaults always
+    // enforce (or, when the default is 'allow', do nothing of consequence).
+    mode: 'enforce',
   };
 }

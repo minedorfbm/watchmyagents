@@ -22,13 +22,22 @@ export class DecisionLogger {
     ruleName,
     message,
     decidedInMs,
+    mode,             // v1.1.3 Phase 1.D: 'enforce' | 'shadow' (default 'enforce' if absent)
   }) {
+    // In shadow mode the decision is computed and logged but NOT enforced.
+    // status must reflect what actually happened on the wire: shadow + deny
+    // didn't actually block, so status='ok' keeps Watch's aggregations honest.
+    // output.mode is what calibration reads to compare would-have-blocked vs
+    // did-block.
+    const effectiveMode = mode || 'enforce';
+    const enforced = effectiveMode === 'enforce'
+      && (decision === 'deny' || decision === 'interrupt');
     return this._logger.write({
       action_type: 'shield_decision',
       provider: 'anthropic-managed',
       tool_name: sourceEvent?.name || sourceEvent?.tool_name || null,
-      status: decision === 'deny' || decision === 'interrupt' ? 'error' : 'ok',
-      error: decision === 'deny' || decision === 'interrupt' ? message : null,
+      status: enforced ? 'error' : 'ok',
+      error: enforced ? message : null,
       duration_ms: decidedInMs ?? null,
       input: {
         source_event_id: sourceEvent?.id || null,
@@ -40,6 +49,7 @@ export class DecisionLogger {
         rule_id: ruleId,
         rule_name: ruleName,
         message,
+        mode: effectiveMode,
       },
     });
   }

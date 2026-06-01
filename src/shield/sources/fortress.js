@@ -233,6 +233,9 @@ export class FortressPolicySource {
 // Convert a Fortress DB policy row to the local Shield format.
 // Throws on anything invalid so _refresh can skip it (policies from the cloud
 // are NOT fully trusted — apply the same hardening as the local JSON loader).
+// v1.1.3 Phase 1.D — same modes as the local JSON loader.
+const VALID_MODES = new Set(['enforce', 'shadow']);
+
 function compilePolicyFromFortress(p) {
   if (!p || typeof p !== 'object') throw new Error('policy is not an object');
   if (!VALID_ACTIONS.has(p.action)) {
@@ -244,6 +247,14 @@ function compilePolicyFromFortress(p) {
   if (p.priority != null && (typeof p.priority !== 'number' || !Number.isFinite(p.priority))) {
     throw new Error(`priority must be a finite number (got ${p.priority})`);
   }
+  // v1.1.3 Phase 1.D — accept `mode` from Fortress rows (added by Lovable
+  // when the companion prompt deploys the schema column). Default to
+  // 'enforce' for backwards compat: existing Fortress instances without
+  // the `mode` column yield policies that enforce, as they always have.
+  const mode = p.mode ?? 'enforce';
+  if (!VALID_MODES.has(mode)) {
+    throw new Error(`unsupported mode "${mode}" (expected enforce|shadow)`);
+  }
   const out = {
     id: p.rule_id,
     name: p.name,
@@ -252,6 +263,7 @@ function compilePolicyFromFortress(p) {
     action: p.action,
     message: p.message,
     priority: p.priority ?? 100,
+    mode,
   };
   // Reuse the SAME ReDoS-safe compiler as the local JSON loader (rejects
   // catastrophic-backtracking patterns + over-long regexes). Previously this

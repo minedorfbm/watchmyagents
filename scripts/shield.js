@@ -214,14 +214,26 @@ async function runSessionWorker({ sessionId, ctx }) {
         const result = evaluate(normalized, ctx.ruleset);
         const decidedInMs = Date.now() - t0;
 
-        sinfo(sessionId, `${rawEvent.type} tool=${normalized.tool_name} → ${result.decision}${result.rule_id ? ` (${result.rule_id})` : ''}`);
+        // v1.1.3 Phase 1.D — mode badge in the log line for operator visibility.
+        const modeTag = result.mode === 'shadow' ? ' [SHADOW]' : '';
+        sinfo(sessionId, `${rawEvent.type} tool=${normalized.tool_name} → ${result.decision}${modeTag}${result.rule_id ? ` (${result.rule_id})` : ''}`);
 
         await decisions(sessionId).record({
           sourceEvent: rawEvent, decision: result.decision,
           ruleId: result.rule_id, ruleName: result.rule_name,
           message: result.message, decidedInMs,
+          mode: result.mode,
         });
         fireToFortress(rawEvent, normalized, result, decidedInMs);
+
+        // v1.1.3 Phase 1.D — in shadow mode, the decision is COMPUTED + LOGGED
+        // but NOT enforced. The rule's "would_deny" / "would_interrupt"
+        // outcome flows to Fortress for Platt-scaling calibration + diff-in-diff
+        // efficacy measurement (Guardian Core hardening axes 1 + 4), but the
+        // agent's session continues uninterrupted. Promote to enforce only
+        // after calibration confidence + lifecycle gates (Guardian Core spec
+        // observe → shadow → enforce → retired).
+        if (result.mode === 'shadow') continue;
 
         if ((result.decision === 'deny' || result.decision === 'interrupt') && !sessionInterrupted) {
           try {
@@ -271,14 +283,33 @@ async function runSessionWorker({ sessionId, ctx }) {
           const result = evaluate(normalized, ctx.ruleset);
           const decidedInMs = Date.now() - t0;
 
-          sinfo(sessionId, `requires_action ${sourceEvent.type} tool=${normalized.tool_name} → ${result.decision}${result.rule_id ? ` (${result.rule_id})` : ''}`);
+          // v1.1.3 Phase 1.D — mode badge in the log line for operator visibility.
+          const modeTag = result.mode === 'shadow' ? ' [SHADOW]' : '';
+          sinfo(sessionId, `requires_action ${sourceEvent.type} tool=${normalized.tool_name} → ${result.decision}${modeTag}${result.rule_id ? ` (${result.rule_id})` : ''}`);
 
           await decisions(sessionId).record({
             sourceEvent, decision: result.decision,
             ruleId: result.rule_id, ruleName: result.rule_name,
             message: result.message, decidedInMs,
+            mode: result.mode,
           });
           fireToFortress(sourceEvent, normalized, result, decidedInMs);
+
+          // v1.1.3 Phase 1.D — shadow mode in tool_confirmation: we MUST
+          // still send confirmAllow even when the rule said deny/interrupt,
+          // otherwise the agent hangs waiting for our response. The
+          // decision is logged with mode=shadow so calibration can compare
+          // what the rule said vs what was enforced (which is "nothing"
+          // here). For mode=enforce, the original branching below stands.
+          if (result.mode === 'shadow') {
+            try {
+              await confirmAllow({ apiKey, sessionId, toolUseId: eventId });
+              // No enforced++ — shadow doesn't enforce by definition.
+            } catch (e) {
+              process.stderr.write(`[shield/${sessionId.slice(0, 12)}] shadow confirmAllow error: ${e.message}\n`);
+            }
+            continue;
+          }
 
           try {
             if (result.decision === 'allow') {
