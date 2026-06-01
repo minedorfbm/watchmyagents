@@ -63,6 +63,11 @@ async function collectFiles(p) {
   return out;
 }
 
+// v1.1.2 F-17: Fortress ingest-signals response is a small confirmation
+// JSON. Cap at 1 MB and abort if the endpoint streams more — defensive
+// against a compromised or misconfigured response.
+const MAX_FORTRESS_RESPONSE_BYTES = 1 * 1024 * 1024;
+
 function postJson(url, headers, body) {
   return new Promise((resolveReq, rejectReq) => {
     const u = new URL(url);
@@ -85,8 +90,22 @@ function postJson(url, headers, body) {
       },
       (res) => {
         const chunks = [];
-        res.on('data', (c) => chunks.push(c));
+        let receivedBytes = 0;
+        let aborted = false;
+        res.on('data', (c) => {
+          if (aborted) return;
+          receivedBytes += c.length;
+          if (receivedBytes > MAX_FORTRESS_RESPONSE_BYTES) {
+            aborted = true;
+            chunks.length = 0;
+            try { req.destroy(); } catch { /* already destroyed */ }
+            rejectReq(new Error(`Fortress response exceeded ${MAX_FORTRESS_RESPONSE_BYTES} bytes — aborting`));
+            return;
+          }
+          chunks.push(c);
+        });
         res.on('end', () => {
+          if (aborted) return;
           const raw = Buffer.concat(chunks).toString('utf8');
           let parsed = null;
           try { parsed = JSON.parse(raw); } catch { /* keep raw */ }

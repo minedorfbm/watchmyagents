@@ -9,6 +9,15 @@
 const API_BASE = 'https://api.anthropic.com';
 const BETA = 'managed-agents-2026-04-01';
 const VERSION = '2023-06-01';
+// v1.1.2 F-16 (P2 Codex audit): hard cap on a single SSE frame buffer.
+// A buggy upstream proxy that strips event separators OR a compromised
+// Anthropic-style endpoint streaming bytes forever without "\n\n" would
+// otherwise OOM Shield's host. 1 MB is far above any real Anthropic
+// event payload (the heaviest events are agent.thinking + agent.message
+// which carry at most a few hundred KB of text). On overflow we throw,
+// which propagates through the generator and triggers the caller's
+// reconnect logic — same outcome as a network error.
+const MAX_SSE_FRAME_BYTES = 1 * 1024 * 1024;
 
 function authHeaders(apiKey) {
   return {
@@ -42,6 +51,14 @@ export async function* openEventStream({ apiKey, sessionId, signal }) {
       const { done, value } = await reader.read();
       if (done) break;
       buffer += decoder.decode(value, { stream: true });
+
+      // v1.1.2 F-16: guard against an upstream that never emits "\n\n" —
+      // throw to abort the stream cleanly, the caller's reconnect logic
+      // will pick up. Drop the buffer to free memory before throwing.
+      if (buffer.length > MAX_SSE_FRAME_BYTES) {
+        buffer = '';
+        throw new Error(`SSE frame exceeded ${MAX_SSE_FRAME_BYTES} bytes — aborting stream (caller should reconnect)`);
+      }
 
       // SSE frames are separated by a blank line ("\n\n"). Each frame may
       // contain multiple lines; we only care about `data:` lines for now.

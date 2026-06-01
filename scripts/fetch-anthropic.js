@@ -85,6 +85,12 @@ function resolveModel(agent) {
 }
 
 // HTTPS POST helper for the --upload signals push (mirrors wma-upload-fortress).
+// v1.1.2 F-17: response body cap for the Fortress ingest-signals POST.
+// The expected reply is a small JSON confirmation ({signal_id, agent_id,
+// registered_new_agent}) — well under 1 MB. Any larger and the endpoint
+// is misconfigured or compromised; abort.
+const MAX_FORTRESS_RESPONSE_BYTES = 1 * 1024 * 1024;
+
 function postJson(url, headers, body) {
   return new Promise((resolveReq, rejectReq) => {
     const u = new URL(url);
@@ -97,8 +103,22 @@ function postJson(url, headers, body) {
       rejectUnauthorized: true,
     }, (res) => {
       const chunks = [];
-      res.on('data', (c) => chunks.push(c));
+      let receivedBytes = 0;
+      let aborted = false;
+      res.on('data', (c) => {
+        if (aborted) return;
+        receivedBytes += c.length;
+        if (receivedBytes > MAX_FORTRESS_RESPONSE_BYTES) {
+          aborted = true;
+          chunks.length = 0;
+          try { req.destroy(); } catch { /* already destroyed */ }
+          rejectReq(new Error(`Fortress response exceeded ${MAX_FORTRESS_RESPONSE_BYTES} bytes — aborting`));
+          return;
+        }
+        chunks.push(c);
+      });
       res.on('end', () => {
+        if (aborted) return;
         const raw = Buffer.concat(chunks).toString('utf8');
         let parsed = null; try { parsed = JSON.parse(raw); } catch { /* keep raw */ }
         resolveReq({ status: res.statusCode || 0, body: parsed ?? raw });

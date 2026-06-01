@@ -29,6 +29,12 @@ const VERSION = '2023-06-01';
 // Hard cap on any single GET so a hung connection can't pin Watch/Shield
 // forever. getWithRetry will retry on timeout (the error propagates here).
 const REQUEST_TIMEOUT_MS = 30_000;
+// v1.1.2 F-17 (P3 Codex audit): cap on a single Anthropic response body.
+// Event history pages (/v1/sessions/{id}/events) can carry up to ~1000
+// events × thousands of bytes each, so 16 MB is the headroom we leave
+// before we conclude something is wrong. Above this we abort the
+// request and getWithRetry will retry on the next attempt.
+const MAX_ANTHROPIC_RESPONSE_BYTES = 16 * 1024 * 1024;
 
 function httpGet(apiKey, path) {
   return new Promise((resolve, reject) => {
@@ -43,8 +49,22 @@ function httpGet(apiKey, path) {
       },
     }, res => {
       const chunks = [];
-      res.on('data', c => chunks.push(c));
+      let receivedBytes = 0;
+      let aborted = false;
+      res.on('data', c => {
+        if (aborted) return;
+        receivedBytes += c.length;
+        if (receivedBytes > MAX_ANTHROPIC_RESPONSE_BYTES) {
+          aborted = true;
+          chunks.length = 0;
+          try { req.destroy(); } catch { /* already destroyed */ }
+          reject(new Error(`Anthropic response exceeded ${MAX_ANTHROPIC_RESPONSE_BYTES} bytes — aborting (${path})`));
+          return;
+        }
+        chunks.push(c);
+      });
       res.on('end', () => {
+        if (aborted) return;
         const body = Buffer.concat(chunks).toString('utf8');
         if (res.statusCode >= 200 && res.statusCode < 300) {
           try { resolve(JSON.parse(body)); } catch (e) { reject(e); }
