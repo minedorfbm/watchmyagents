@@ -183,7 +183,31 @@ const RELEVANT_TYPES = [
 
 const tsMs = ev => Date.parse(ev.processed_at || ev.created_at || '') || null;
 
+// v1.1.3 Phase 1.B — `fetchSessionEntries` is now a 3-line wrapper around
+// the pure async transformer below. The HTTP layer (fetchRawEvents) is
+// the only thing that needs the network — the per-event normalization
+// logic is a pure async generator that any test can drive with synthetic
+// event arrays. Same external contract; new internal seam for testing.
 export async function* fetchSessionEntries({ apiKey, agentId, sessionId, model }) {
+  yield* transformRawEventsToWMAActions(
+    fetchRawEvents(apiKey, sessionId),
+    { agentId, sessionId, model },
+  );
+}
+
+/**
+ * Pure async transformer: raw Anthropic events → WMAAction objects.
+ *
+ * Takes any async iterable of raw Anthropic events (live HTTP stream OR
+ * synthetic test fixture array) plus the routing metadata, yields one
+ * WMAAction per relevant event. Maintains all the cross-event state
+ * (pendingModelReq / pendingToolUse pairs, subThreadIds tracking, F-6a
+ * discriminators, F-8 end-of-session flush of unresolved tool calls).
+ *
+ * Why a separate function: keeps `fetchSessionEntries` HTTP-only and
+ * makes integration tests trivial — no network mocking required.
+ */
+export async function* transformRawEventsToWMAActions(rawEventsAsyncIterable, { agentId, sessionId, model }) {
   // Pair-tracking maps: event_id of the "start" → its timestamp + metadata
   const pendingModelReq = new Map();    // span.model_request_start.id → ts
   const pendingToolUse = new Map();     // agent.tool_use.id → { ts, name, isMcp, input }
@@ -220,7 +244,7 @@ export async function* fetchSessionEntries({ apiKey, agentId, sessionId, model }
   // exact filterable set is undocumented & evolves. We pull everything and
   // filter here, ensuring future event types are surfaced rather than dropped.
   const RELEVANT = new Set(RELEVANT_TYPES);
-  for await (const ev of fetchRawEvents(apiKey, sessionId)) {
+  for await (const ev of rawEventsAsyncIterable) {
     if (!RELEVANT.has(ev.type)) continue;
     const type = ev.type;
     const ts = ev.processed_at || ev.created_at || new Date().toISOString();
@@ -239,7 +263,12 @@ export async function* fetchSessionEntries({ apiKey, agentId, sessionId, model }
     // contribute correctly to the agent's overall classification.
     const inSubThread = session_thread_id != null && subThreadIds.has(session_thread_id);
     const composition_pattern = inSubThread ? COMPOSITION_PATTERNS.HIERARCHY : COMPOSITION_PATTERNS.SOLO;
-    const subAgentMeta = { session_thread_id, agent_name, composition_pattern };
+    // parent_agent_id: see the design note at the top of fetchSessionEntries.
+    // Anthropic Task tool sub-agents share the parent's agent_id at the API
+    // level, so the field is null for ALL Anthropic events. Explicitly
+    // null (not undefined) so consumers see a documented value per WMAAction
+    // schema and downstream tests can assert it cleanly.
+    const subAgentMeta = { session_thread_id, agent_name, composition_pattern, parent_agent_id: null };
     const tsMillis = tsMs(ev);
 
     if (type === 'span.model_request_start') {
@@ -386,9 +415,24 @@ export async function* fetchSessionEntries({ apiKey, agentId, sessionId, model }
       const start = pendingToolUse.get(ev.tool_use_id);
       pendingToolUse.delete(ev.tool_use_id);
       const isError = ev.is_error === true;
+      // v1.1.3 Phase 1.B fix: the yielded action represents the TOOL CALL
+      // as a whole (input from start, output from result). Its discriminators
+      // (session_thread_id, agent_name, composition_pattern) should reflect
+      // the START's context — where the tool was INVOKED — not the result
+      // event's, which may or may not carry these fields depending on
+      // provider event-shape quirks. Falls back to the current event's
+      // subAgentMeta if the start somehow didn't capture them (defensive).
+      const pairedMeta = start ? {
+        session_thread_id: start.session_thread_id ?? subAgentMeta.session_thread_id,
+        agent_name: start.agent_name ?? subAgentMeta.agent_name,
+        composition_pattern: (start.session_thread_id != null && subThreadIds.has(start.session_thread_id))
+          ? COMPOSITION_PATTERNS.HIERARCHY
+          : COMPOSITION_PATTERNS.SOLO,
+        parent_agent_id: null,  // see subAgentMeta — Anthropic shares parent's agent_id
+      } : subAgentMeta;
       yield {
         ...base,
-        ...subAgentMeta,
+        ...pairedMeta,
         id: ev.id,
         action_type: start?.isMcp ? 'mcp_tool_use' : 'tool_use',
         tool_name: start?.name || 'unknown',
