@@ -213,15 +213,28 @@ test('assertImplementsSource rejects unknown providerName', () => {
   assert.throws(() => assertImplementsSource(Bad), /providerName/);
 });
 
-test('assertImplementsSource rejects unknown enforcementMode', () => {
+test('assertImplementsSource rejects unknown enforcementCapability (new canonical name)', () => {
   class Bad extends Source {
     static providerName = 'anthropic-managed';
-    static enforcementMode = 'gentle_nudge';
+    static enforcementCapability = 'gentle_nudge';
     async listAgents() { return []; }
     async *streamEvents() { /* */ }
     async enforce() { return { enforced: true }; }
   }
-  assert.throws(() => assertImplementsSource(Bad), /enforcementMode/);
+  assert.throws(() => assertImplementsSource(Bad), /enforcementCapability/);
+});
+
+test('assertImplementsSource still accepts legacy static enforcementMode (v1.x backwards compat)', () => {
+  // Subclasses written before the v1.1.3 rename used `static enforcementMode = ...`
+  // and must continue to work via the inherited Source.enforcementMode getter.
+  class Legacy extends Source {
+    static providerName = 'anthropic-managed';
+    static enforcementMode = 'sync_confirm';  // ← old name still works
+    async listAgents() { return []; }
+    async *streamEvents() { /* */ }
+    async enforce() { return { enforced: true }; }
+  }
+  assert.doesNotThrow(() => assertImplementsSource(Legacy));
 });
 
 test('assertImplementsSource requires enforce() override unless detect_only', () => {

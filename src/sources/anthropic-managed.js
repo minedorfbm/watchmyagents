@@ -587,7 +587,12 @@ function extractText(content) {
 
 export class AnthropicManagedSource extends Source {
   static providerName = PROVIDERS.ANTHROPIC_MANAGED;
-  static enforcementMode = ENFORCEMENT_MODES.SYNC_CONFIRM;
+  // v1.1.3: renamed from `enforcementMode` — the static field is the MAX
+  // capability the provider exposes; the EFFECTIVE per-agent mode is
+  // resolved at runtime via effectiveEnforcementMode() since v1.0.1 F-2.
+  // The `enforcementMode` getter inherited from Source.enforcementMode
+  // returns this value, so callers reading either name still work.
+  static enforcementCapability = ENFORCEMENT_MODES.SYNC_CONFIRM;
 
   constructor({ apiKey } = {}) {
     super({ apiKey });

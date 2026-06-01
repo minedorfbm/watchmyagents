@@ -109,6 +109,53 @@ export function normalizeToolName(toolName, salt) {
   return 'tool_hash:' + createHash('sha256').update(salt).update(s).digest('hex').slice(0, 32);
 }
 
+// ── Tool input field normalization (Phase 1.A L-2, v1.1.3) ──────────────
+//
+// HASHABLE_INPUT_FIELDS is the canonical set of input field names the
+// anonymizer knows how to hash. These names came from the Anthropic tool
+// shape (`web_fetch.url`, `web_search.query`, `bash.command`, file tools).
+// Other frameworks use different native names — OpenAI function tools
+// have arbitrary user-defined argument names, LangGraph tools use the
+// `tools[].args` shape, CrewAI uses `task.context`, etc.
+//
+// To avoid silent IoC loss when a new adapter lands, adapters can call
+// `normalizeToolInput()` BEFORE yielding their WMAAction to map their
+// native tool argument names to the canonical set. The function takes
+// the raw input object and an alias map `{nativeName: canonicalName}`
+// and returns a new object where canonical names are populated from
+// the corresponding native fields (without losing the originals — both
+// are kept so the local NDJSON preserves full fidelity).
+//
+// Example for a future OpenAI function tool that exposes `endpoint_url`:
+//   yield {
+//     ...,
+//     action_type: 'custom_tool_use',
+//     tool_name: 'fetch_remote',
+//     input: normalizeToolInput(rawInput, { endpoint_url: 'url' }),
+//   };
+// Now `entry.input.url` is populated → the anonymizer's IoC hashing
+// fires → Fortress receives a hashed signal as expected.
+//
+// Adapters that already use canonical names (Anthropic) can skip the
+// helper — it's a no-op when no aliases match.
+export function normalizeToolInput(rawInput, aliases = {}) {
+  if (rawInput == null || typeof rawInput !== 'object') return rawInput;
+  const out = { ...rawInput };
+  for (const [nativeName, canonicalName] of Object.entries(aliases)) {
+    if (!HASHABLE_INPUT_FIELDS.includes(canonicalName)) {
+      throw new Error(`normalizeToolInput: "${canonicalName}" is not a canonical hashable field (must be one of: ${HASHABLE_INPUT_FIELDS.join(', ')})`);
+    }
+    if (out[canonicalName] == null && rawInput[nativeName] != null) {
+      out[canonicalName] = rawInput[nativeName];
+    }
+  }
+  return out;
+}
+
+// Re-export the canonical hashable-fields list so adapter authors can
+// programmatically reference the contract.
+export { HASHABLE_INPUT_FIELDS };
+
 // ── Single-entry extractor: what hashable IoCs are in this entry? ────────
 
 function extractIocs(entry, salt) {

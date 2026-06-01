@@ -14,7 +14,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { SignalsAggregator, hashWithSalt, normalizeToolName } from '../src/anonymizer.js';
+import { SignalsAggregator, hashWithSalt, normalizeToolName, normalizeToolInput, HASHABLE_INPUT_FIELDS } from '../src/anonymizer.js';
 
 // Distinctive sentinel strings chosen so a substring match would never
 // false-positive against legitimate signals payload content.
@@ -250,6 +250,79 @@ test('Containment F-6: payload.session_ids is empty when no entries have session
 
   assert.deepEqual(out.payload.session_ids, [],
     'session_ids must be an empty array when no session_id is present, never null/undefined');
+});
+
+// ── Phase 1.A L-2 (v1.1.3): normalizeToolInput for cross-framework IoC mapping ──
+
+test('L-2: normalizeToolInput is a no-op when no aliases provided', () => {
+  const raw = { url: 'https://x.com', extra: 'keep me' };
+  const out = normalizeToolInput(raw, {});
+  assert.deepEqual(out, raw, 'no aliases = unchanged copy');
+});
+
+test('L-2: normalizeToolInput populates canonical field from native name', () => {
+  // OpenAI-style function tool with custom arg name "endpoint_url"
+  const raw = { endpoint_url: 'https://api.example.com/users', method: 'GET' };
+  const out = normalizeToolInput(raw, { endpoint_url: 'url' });
+  assert.equal(out.url, 'https://api.example.com/users', 'canonical url populated from endpoint_url');
+  assert.equal(out.endpoint_url, 'https://api.example.com/users', 'original kept (full fidelity local)');
+  assert.equal(out.method, 'GET', 'unrelated fields kept');
+});
+
+test('L-2: normalizeToolInput respects existing canonical fields (no overwrite)', () => {
+  const raw = { url: 'https://explicit.example', endpoint: 'https://alias.example' };
+  const out = normalizeToolInput(raw, { endpoint: 'url' });
+  assert.equal(out.url, 'https://explicit.example', 'existing canonical not overwritten');
+});
+
+test('L-2: normalizeToolInput supports multiple alias mappings at once', () => {
+  const raw = { search_term: 'a quick search', shell_cmd: 'ls -la', filepath: '/etc/passwd' };
+  const out = normalizeToolInput(raw, {
+    search_term: 'query',
+    shell_cmd: 'command',
+    filepath: 'file_path',
+  });
+  assert.equal(out.query, 'a quick search');
+  assert.equal(out.command, 'ls -la');
+  assert.equal(out.file_path, '/etc/passwd');
+});
+
+test('L-2: normalizeToolInput rejects non-canonical target field names', () => {
+  assert.throws(
+    () => normalizeToolInput({ foo: 'x' }, { foo: 'bar' }),
+    /not a canonical hashable field/,
+    'must throw if target name is not in HASHABLE_INPUT_FIELDS',
+  );
+});
+
+test('L-2: normalizeToolInput returns input unchanged when null/undefined/non-object', () => {
+  assert.equal(normalizeToolInput(null, { x: 'url' }), null);
+  assert.equal(normalizeToolInput(undefined, { x: 'url' }), undefined);
+  assert.equal(normalizeToolInput('a string', { x: 'url' }), 'a string');
+});
+
+test('L-2: HASHABLE_INPUT_FIELDS exported list matches anonymizer expectations', () => {
+  // Canonical set as of Phase 1.A — covers Anthropic tool argument shape.
+  // Adapters MUST map their framework's native field names to one of these.
+  assert.deepEqual(
+    [...HASHABLE_INPUT_FIELDS].sort(),
+    ['command', 'file_path', 'path', 'query', 'url'].sort(),
+  );
+});
+
+test('L-2: full round-trip — normalize OpenAI-style input → aggregator hashes the canonical URL', () => {
+  const agg = new SignalsAggregator({ salt: SALT });
+  const normalized = normalizeToolInput(
+    { endpoint_url: 'https://internal.example/secret-foo' },
+    { endpoint_url: 'url' },
+  );
+  agg.add(syntheticEvent({ input: normalized }));
+  const out = agg.finalize();
+  const expectedHash = hashWithSalt('https://internal.example/secret-foo', SALT);
+  assert.ok(
+    out.payload.ioc_hashes.includes(expectedHash),
+    'after normalization the IoC URL is hashed and present in the signals payload',
+  );
 });
 
 test('Containment F-6: session_ids carry only opaque tokens, never raw content', () => {

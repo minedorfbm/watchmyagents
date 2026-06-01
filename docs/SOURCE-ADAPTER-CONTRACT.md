@@ -30,8 +30,8 @@ A new adapter is one file (`src/sources/<your-provider>.js`) that does three thi
 import { Source, PROVIDERS, ENFORCEMENT_MODES } from './contract.js';
 
 export class YourProviderSource extends Source {
-  static providerName = PROVIDERS.YOUR_PROVIDER;       // (add to PROVIDERS in contract.js)
-  static enforcementMode = ENFORCEMENT_MODES.SYNC_CONFIRM; // or sync_interrupt / detect_only
+  static providerName = PROVIDERS.YOUR_PROVIDER;             // (add to PROVIDERS in contract.js)
+  static enforcementCapability = ENFORCEMENT_MODES.SYNC_CONFIRM; // or sync_interrupt / detect_only
 
   constructor({ apiKey, ...rest } = {}) {
     super({ apiKey, ...rest });
@@ -53,13 +53,15 @@ export class YourProviderSource extends Source {
   }
 
   async enforce(action, decision) {
-    // ONLY required if enforcementMode != detect_only.
+    // ONLY required if enforcementCapability != detect_only.
     // Translate WMA's canonical {decision: 'allow'|'deny'} into the
     // vendor's native confirm/interrupt call.
     // Return { enforced: boolean, native_response?: object }
   }
 }
 ```
+
+> **v1.1.3 naming note**: `enforcementCapability` is the new canonical static field name (replaces `enforcementMode`). The old name still works via a backwards-compat getter on `Source`, so existing subclasses keep functioning. The rename clarifies that the static field is the **MAX capability** the provider exposes — the **effective per-agent mode** is resolved at runtime (see `effectiveEnforcementMode()` in `anthropic-managed.js` for the reference impl).
 
 That's it. Don't touch the anonymizer, the typology classifier, the Guardian scoring, or Fortress. They consume `WMAAction` and don't care which Source emitted it.
 
@@ -104,6 +106,10 @@ Run `validateWMAAction(obj)` in your test suite. In dev, set `WMA_DEV_VALIDATE=1
 
 Defined in `ACTION_TYPES` in `src/sources/contract.js`. Map your vendor's native events onto these — don't invent new ones inline. If a new kind of action genuinely doesn't fit, propose adding to the constant.
 
+The vocabulary is grouped into two tiers (v1.1.3 audit, Phase 1.A L-1):
+
+### Universal — every adapter should be able to emit these
+
 | Constant | When to emit |
 |---|---|
 | `LLM_CALL` | An LLM inference happened (yield once per call with token counts + latency) |
@@ -116,19 +122,62 @@ Defined in `ACTION_TYPES` in `src/sources/contract.js`. Map your vendor's native
 | `USER_INTERRUPT` | User cancelled mid-execution |
 | `MESSAGE` | Agent emitted a final/intermediate response |
 | `THINKING` | Agent produced internal reasoning (extended thinking, scratchpad) |
-| `CONTEXT_COMPACTED` | The thread was compacted (data loss event — security relevant) |
-| `THREAD_CREATED` | A sub-thread or sub-conversation was spawned |
-| `THREAD_MESSAGE_SENT` / `THREAD_MESSAGE_RECEIVED` | Multi-agent message passing |
-| `CONFIG_CHANGE` | Session/agent configuration changed mid-flight |
-| `STATE_TRANSITION` | Session/thread changed lifecycle state (running/idle/terminated/…) |
-| `SESSION_ERROR` | Session-level error |
-| `SHIELD_DECISION` | WMA itself blocked an action (Shield emits these) |
+| `SESSION_ERROR` | Session-level error from the provider runtime |
+| `HANDOFF` | Agent A passes control to agent B (OpenAI Agents handoffs, AgentCore multi-agent, CrewAI manager delegation, Hermes spawn_subagent, LangGraph subgraph spawn). **Anthropic Task tool emits THREAD_MESSAGE_SENT instead — both valid for that adapter.** |
+| `GRAPH_NODE_TRANSITION` | Graph-flavored frameworks (LangGraph, AutoGen state machines, conditional workflow engines) when execution moves between nodes/states. Carries `from_node`/`to_node` in `output`. |
+| `SHIELD_DECISION` | WMA itself blocked/allowed an action (Shield emits these — adapters generally don't) |
+
+### Framework-specific — originated from Anthropic Managed Agents
+
+These types were the seed vocabulary when WMA shipped with Anthropic only. They map cleanly to other frameworks only when those frameworks have a genuinely equivalent concept; otherwise use the universal type from the table above.
+
+| Constant | When to emit | Other-framework guidance |
+|---|---|---|
+| `CONTEXT_COMPACTED` | Context window saturated; thread was compacted (data loss — security relevant) | Most frameworks (OpenAI/CrewAI/LangGraph) silently roll the window without exposing this event. Skip emitting unless your framework has an explicit equivalent. |
+| `THREAD_CREATED` | A sub-thread was spawned within a session (Anthropic Task tool delegation) | Use `HANDOFF` + a new sub-agent identity instead. Only emit THREAD_CREATED if your framework has a literal "thread" concept. |
+| `THREAD_MESSAGE_SENT` / `THREAD_MESSAGE_RECEIVED` | Inter-agent message in a thread (parent ↔ sub-agent) | Use `HANDOFF` for the control transfer + `MESSAGE` for the reply. |
+| `CONFIG_CHANGE` | Session/agent config changed mid-flight (Anthropic `session.updated`) | Most frameworks don't expose runtime config edits as events. Skip. |
+| `STATE_TRANSITION` | Session/thread lifecycle state change (running/idle/rescheduled/terminated) | Map your framework's state machine cautiously — naming and granularity differ. |
+
+**Adding a new type**: if your framework exposes a category of event with no equivalent in either group, propose a new constant via PR. Prefer generic names (e.g., `GRAPH_INTERRUPT` for LangGraph's `interrupt()`, not `LANGGRAPH_INTERRUPT`).
+
+### Input field normalization (HASHABLE_INPUT_FIELDS)
+
+The anonymizer hashes IoCs from `entry.input.{url, query, command, path, file_path}` — the canonical names that emerged from the Anthropic tool shape. Adapters whose framework exposes tool arguments under different native names MUST map them before yielding, otherwise the IoCs vanish silently from Fortress signals.
+
+Use the shared helper:
+
+```js
+import { normalizeToolInput } from '../src/anonymizer.js';
+
+// OpenAI function tool with arg "endpoint_url" → canonical "url"
+yield {
+  ...,
+  action_type: 'custom_tool_use',
+  tool_name: 'fetch_remote',
+  input: normalizeToolInput(rawArgs, { endpoint_url: 'url' }),
+};
+```
+
+Multiple aliases at once:
+
+```js
+input: normalizeToolInput(rawArgs, {
+  search_term: 'query',
+  shell_cmd: 'command',
+  filepath: 'file_path',
+});
+```
+
+The helper preserves the original native fields (full local fidelity) and adds the canonical aliases. The IoC hashing then fires automatically on the canonical names.
 
 ---
 
-## 5. Enforcement mode — what your adapter promises
+## 5. Enforcement capability — what your adapter promises
 
-Declared via `static enforcementMode`. It determines what Shield will be able to do:
+Declared via `static enforcementCapability` (renamed from `enforcementMode` in v1.1.3 — see §2 for the backwards-compat alias). The static field declares the **MAX** capability the provider exposes; the **effective per-agent** mode is resolved at runtime (see `effectiveEnforcementMode()` in `src/sources/anthropic-managed.js` for the reference impl: it inspects the agent's `permission_policy` and reports `sync_confirm` only when at least one tool has `always_ask` configured).
+
+It determines what Shield will be able to do:
 
 | Mode | What it means | Examples |
 |---|---|---|
@@ -179,7 +228,7 @@ See `test/source-contract.test.js` for the AnthropicManagedSource reference test
 ## 8. Checklist before opening a PR
 
 - [ ] `static providerName` added to `PROVIDERS` in `contract.js`
-- [ ] `static enforcementMode` declared honestly
+- [ ] `static enforcementCapability` declared honestly (max provider capability, not per-agent effective)
 - [ ] `assertImplementsSource(YourSource)` passes
 - [ ] Every yielded action passes `validateWMAAction`
 - [ ] Raw payloads never leave the customer process (Containment)

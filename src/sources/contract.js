@@ -29,26 +29,76 @@
 // Every WMAAction.action_type MUST be one of these. New adapters that
 // emit a novel kind of action should propose adding a new constant here
 // (and document it) rather than inventing one inline.
+//
+// Audit note (Phase 1.A, v1.1.3): the vocabulary is grouped into two
+// tiers to make the contract honest about which types are framework-
+// agnostic vs which originated from one specific framework (Anthropic
+// Managed Agents was the seed adapter). New adapters can:
+//   1. Use UNIVERSAL types directly — they're always meaningful.
+//   2. Use FRAMEWORK-SPECIFIC types ONLY if the new framework has a
+//      genuinely equivalent concept. Otherwise emit a UNIVERSAL type
+//      (e.g., OpenAI handoffs → HANDOFF, NOT THREAD_MESSAGE_SENT).
+//   3. Propose a new constant via a PR when their framework exposes a
+//      genuinely new category of event.
 export const ACTION_TYPES = Object.freeze({
+  // ── UNIVERSAL (every adapter should be able to emit these) ─────────────
+  /** Model inference call (with token usage + duration). */
   LLM_CALL: 'llm_call',
+  /** Provider-built-in tool invocation (web_search, web_fetch, bash, code_exec, …). */
   TOOL_USE: 'tool_use',
+  /** MCP server tool invocation. */
   MCP_TOOL_USE: 'mcp_tool_use',
+  /** Customer-defined tool invocation (the agent calls a tool the user wired). */
   CUSTOM_TOOL_USE: 'custom_tool_use',
+  /** Customer returned the result of a custom tool. */
   CUSTOM_TOOL_RESULT: 'custom_tool_result',
+  /** Human (or orchestrator) approved/denied a pending tool call. */
   TOOL_CONFIRMATION: 'tool_confirmation',
+  /** User sent input to the agent (prompt, follow-up question, …). */
   USER_MESSAGE: 'user_message',
+  /** User cancelled execution mid-flight. */
   USER_INTERRUPT: 'user_interrupt',
+  /** Agent emitted an output message (final reply or intermediate). */
   MESSAGE: 'message',
+  /** Agent emitted internal reasoning (extended thinking / scratchpad). */
   THINKING: 'thinking',
-  CONTEXT_COMPACTED: 'context_compacted',
-  THREAD_CREATED: 'thread_created',
-  THREAD_MESSAGE_SENT: 'thread_message_sent',
-  THREAD_MESSAGE_RECEIVED: 'thread_message_received',
-  CONFIG_CHANGE: 'config_change',
-  STATE_TRANSITION: 'state_transition',
+  /** Session-level error from the provider runtime. */
   SESSION_ERROR: 'session_error',
-  // Shield-only — emitted when WMA itself blocks an action:
+  /** Agent A passes control to agent B (OpenAI Agents handoffs, AgentCore
+   *  multi-agent, CrewAI manager delegation, Hermes spawn_subagent, LangGraph
+   *  subgraph spawn). For Anthropic Task tool, this is typically emitted as
+   *  THREAD_MESSAGE_SENT — both are valid for that framework. */
+  HANDOFF: 'handoff',
+  /** Graph-flavored frameworks (LangGraph, AutoGen state machine,
+   *  conditional workflow engines) emit this when execution moves from one
+   *  node/state to another. Carries `from_node`/`to_node` in `output`. */
+  GRAPH_NODE_TRANSITION: 'graph_node_transition',
+  /** Shield-internal — emitted when WMA itself blocks/allows/interrupts
+   *  an action. Always carries the decision in `output`. */
   SHIELD_DECISION: 'shield_decision',
+
+  // ── FRAMEWORK-SPECIFIC (Anthropic Managed Agents-origin, may map cleanly to
+  //    other frameworks but were named after the Anthropic event vocabulary) ──
+  /** Anthropic-specific: emitted when the context window saturates and the
+   *  thread is compacted (some history lost). OpenAI/CrewAI/LangGraph
+   *  generally roll the window silently without an explicit event. */
+  CONTEXT_COMPACTED: 'context_compacted',
+  /** Anthropic-specific: a sub-thread was spawned within a session (Task
+   *  tool delegation). Other frameworks model this as HANDOFF + a new
+   *  agent identity. */
+  THREAD_CREATED: 'thread_created',
+  /** Anthropic-specific: inter-agent message in a thread (parent → sub-agent). */
+  THREAD_MESSAGE_SENT: 'thread_message_sent',
+  /** Anthropic-specific: reply from a sub-agent in a thread (sub → parent). */
+  THREAD_MESSAGE_RECEIVED: 'thread_message_received',
+  /** Anthropic-specific: session configuration changed mid-flight
+   *  (`session.updated` event with a diff). Other frameworks generally
+   *  don't expose live config edits as events. */
+  CONFIG_CHANGE: 'config_change',
+  /** Anthropic-specific: session/thread lifecycle state change (running/
+   *  idle/rescheduled/terminated). Other frameworks have different state
+   *  machines; map cautiously. */
+  STATE_TRANSITION: 'state_transition',
 });
 
 export const STATUS_VALUES = Object.freeze({
@@ -185,19 +235,35 @@ export function validateWMAAction(obj) {
  * provider-agnostic.
  *
  * Static contract:
- *   providerName        — value from PROVIDERS
- *   enforcementMode     — value from ENFORCEMENT_MODES
+ *   providerName            — value from PROVIDERS
+ *   enforcementCapability   — value from ENFORCEMENT_MODES; the MAX the
+ *                             provider can do. The EFFECTIVE per-agent
+ *                             mode may be weaker (resolved at runtime
+ *                             via the provider's effectiveEnforcementMode
+ *                             helper; see AnthropicManagedSource for the
+ *                             reference impl).
+ *
+ *   ⚠️  Renamed from `enforcementMode` in v1.1.3 because the previous
+ *       name was misleading (a static field is the capability ceiling,
+ *       not the runtime mode). `enforcementMode` is kept as a backward-
+ *       compat alias for v1.x consumers; it returns the same value.
  *
  * Instance contract:
- *   listAgents()        — return all agents accessible with the client creds
- *   streamEvents(id)    — async generator yielding WMAAction objects
- *   enforce(action, d)  — only required if enforcementMode != detect_only
+ *   listAgents()       — return all agents accessible with the client creds
+ *   streamEvents(id)   — async generator yielding WMAAction objects
+ *   enforce(action, d) — only required if enforcementCapability != detect_only
  *
  * See `docs/SOURCE-ADAPTER-CONTRACT.md` for the full author guide.
  */
 export class Source {
   static providerName = null;
-  static enforcementMode = null;
+  static enforcementCapability = null;
+  // v1.1.3 backwards-compat alias for the renamed static field. Subclasses
+  // that set `enforcementMode` directly still work; new subclasses should
+  // set `enforcementCapability` instead. Resolved as a getter at read
+  // time so the rename can land without breaking consumers like
+  // assertImplementsSource() that read it from the class.
+  static get enforcementMode() { return this.enforcementCapability; }
 
   constructor(config = {}) {
     if (new.target === Source) {
@@ -237,7 +303,7 @@ export class Source {
    * @returns {Promise<{enforced: boolean, native_response?: object}>}
    */
   async enforce(action, decision) { // eslint-disable-line no-unused-vars
-    if (this.constructor.enforcementMode === ENFORCEMENT_MODES.DETECT_ONLY) {
+    if (this.constructor.enforcementCapability === ENFORCEMENT_MODES.DETECT_ONLY) {
       throw new Error(`${this.constructor.name} is detect_only — enforce() must not be called`);
     }
     throw new Error(`${this.constructor.name}.enforce() not implemented`);
@@ -256,8 +322,11 @@ export function assertImplementsSource(SourceClass) {
   if (!Object.values(PROVIDERS).includes(SourceClass.providerName)) {
     throw new Error(`${SourceClass.name}.providerName="${SourceClass.providerName}" not in PROVIDERS`);
   }
-  if (!Object.values(ENFORCEMENT_MODES).includes(SourceClass.enforcementMode)) {
-    throw new Error(`${SourceClass.name}.enforcementMode="${SourceClass.enforcementMode}" not in ENFORCEMENT_MODES`);
+  // v1.1.3: read enforcementCapability (the new canonical name) but fall
+  // back to enforcementMode for legacy subclasses that haven't migrated.
+  const capability = SourceClass.enforcementCapability ?? SourceClass.enforcementMode;
+  if (!Object.values(ENFORCEMENT_MODES).includes(capability)) {
+    throw new Error(`${SourceClass.name}.enforcementCapability="${capability}" not in ENFORCEMENT_MODES`);
   }
   // The base class throws "not implemented" — a real subclass must override.
   for (const m of ['listAgents', 'streamEvents']) {
@@ -265,8 +334,8 @@ export function assertImplementsSource(SourceClass) {
       throw new Error(`${SourceClass.name}.${m}() must be overridden`);
     }
   }
-  if (SourceClass.enforcementMode !== ENFORCEMENT_MODES.DETECT_ONLY
+  if (capability !== ENFORCEMENT_MODES.DETECT_ONLY
       && SourceClass.prototype.enforce === Source.prototype.enforce) {
-    throw new Error(`${SourceClass.name}.enforce() must be overridden (enforcementMode=${SourceClass.enforcementMode})`);
+    throw new Error(`${SourceClass.name}.enforce() must be overridden (enforcementCapability=${capability})`);
   }
 }
