@@ -6,6 +6,8 @@
 //
 // Uses built-in fetch + ReadableStream (Node 18+). Zero deps.
 
+import { normalizeSseBuffer } from './sse.js';
+
 const API_BASE = 'https://api.anthropic.com';
 const BETA = 'managed-agents-2026-04-01';
 const VERSION = '2023-06-01';
@@ -51,6 +53,12 @@ export async function* openEventStream({ apiKey, sessionId, signal }) {
       const { done, value } = await reader.read();
       if (done) break;
       buffer += decoder.decode(value, { stream: true });
+      // v1.1.4 F-18 (P1 Codex audit): normalize all SSE line terminators
+      // (CR, CRLF) to LF so the indexOf('\n\n') scan below catches every
+      // event boundary the spec allows. Without this, an upstream that
+      // emits CRLF (common in reverse-proxy paths) yielded a buffer that
+      // never matched and Shield silently lost the live enforcement loop.
+      buffer = normalizeSseBuffer(buffer);
 
       // v1.1.2 F-16: guard against an upstream that never emits "\n\n" —
       // throw to abort the stream cleanly, the caller's reconnect logic
@@ -60,8 +68,9 @@ export async function* openEventStream({ apiKey, sessionId, signal }) {
         throw new Error(`SSE frame exceeded ${MAX_SSE_FRAME_BYTES} bytes — aborting stream (caller should reconnect)`);
       }
 
-      // SSE frames are separated by a blank line ("\n\n"). Each frame may
-      // contain multiple lines; we only care about `data:` lines for now.
+      // SSE frames are separated by a blank line. Post-normalize, the
+      // canonical separator is "\n\n"; each frame may contain multiple
+      // lines; we only care about `data:` lines for now.
       let nlIdx;
       while ((nlIdx = buffer.indexOf('\n\n')) !== -1) {
         const frame = buffer.slice(0, nlIdx);

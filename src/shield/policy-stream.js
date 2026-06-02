@@ -32,6 +32,7 @@
 import { request as httpsRequest } from 'node:https';
 import { URL } from 'node:url';
 import { EventEmitter } from 'node:events';
+import { normalizeSseBuffer } from './sse.js';
 
 const RECONNECT_MIN_MS = 1_000;
 const RECONNECT_MAX_MS = 60_000;
@@ -154,6 +155,13 @@ export class PolicyStream extends EventEmitter {
       let buffer = '';
       res.on('data', (chunk) => {
         buffer += chunk;
+        // v1.1.4 F-18 (P1 Codex audit): normalize CR / CRLF line
+        // terminators to LF before scanning for the event separator.
+        // Without this, a Fortress deployment behind a reverse-proxy
+        // that emits CRLF would never trigger a policy refresh push —
+        // updates would silently fall back to the 60s polling loop,
+        // breaking the "sub-second propagation" promise.
+        buffer = normalizeSseBuffer(buffer);
         // v1.1.1 F-9: cap on a single SSE event buffer. A buggy/compromised
         // endpoint that never emits "\n\n" would otherwise OOM Shield.
         // Abort + reconnect on overflow; the buffer is dropped so we
@@ -165,7 +173,8 @@ export class PolicyStream extends EventEmitter {
           if (!this._closed) this._scheduleReconnect();
           return;
         }
-        // SSE events are separated by a blank line ("\n\n").
+        // SSE events are separated by a blank line. Post-normalize the
+        // canonical separator is "\n\n".
         let eolIdx;
         while ((eolIdx = buffer.indexOf('\n\n')) !== -1) {
           const rawEvent = buffer.slice(0, eolIdx);
