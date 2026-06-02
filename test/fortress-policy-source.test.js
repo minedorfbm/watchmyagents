@@ -82,18 +82,37 @@ class TestFortressSource extends FortressPolicySource {
 
 // ── Tests ───────────────────────────────────────────────────────────────
 
-test('1.5.B placeholder root: verification SKIPPED, all policies pass through, onError logs warning', () => {
-  // The default-built source uses ROOT_PUBLIC_KEY = null (placeholder).
-  // In that mode, _verifyAndFilter must NOT drop anything but must
-  // emit a loud onError so ops cannot deploy unaware.
+// NOTE — v1.1.5 release: the placeholder root was flipped to the real
+// production pubkey on 2026-06-02. The placeholder-mode path is now
+// covered by reading the constants directly rather than building a live
+// FortressPolicySource. The next root rotation (every 2y or compromise)
+// will go back through a brief placeholder window in the RC build —
+// keep this test shape alive for that scenario.
+test('1.5.B placeholder root flag: post-release, IS_PLACEHOLDER must be false', async () => {
+  // Pin the release invariant: a v1.1.5+ ships with a real root,
+  // never with the placeholder, and never with a null ROOT_PUBLIC_KEY.
+  const { WMA_FORTRESS_ROOT_IS_PLACEHOLDER, WMA_FORTRESS_ROOT_PUBKEY_B64 } =
+    await import('../src/shield/root-key.js');
+  assert.equal(WMA_FORTRESS_ROOT_IS_PLACEHOLDER, false, 'must NOT ship a placeholder root in a released SDK');
+  assert.equal(WMA_FORTRESS_ROOT_PUBKEY_B64.length, 44, 'real root pubkey is exactly 44 base64 chars');
+  assert.notEqual(WMA_FORTRESS_ROOT_PUBKEY_B64.indexOf('PLACEHOLDER'), 0, 'must not still start with PLACEHOLDER');
+  // Also sanity-check it decodes to 32 bytes (Ed25519 raw pubkey).
+  assert.equal(Buffer.from(WMA_FORTRESS_ROOT_PUBKEY_B64, 'base64').length, 32);
+});
+
+test('1.5.B real root: bundle signed by the WRONG root (test fixture) is fully rejected in strict mode', () => {
+  // The TestFortressSource now uses the REAL production root pubkey
+  // baked into src/shield/root-key.js. Our test fixture's `root` keypair
+  // is a different one, so policies signed by it must NOT verify.
+  // This double-checks the production root is actually being consulted.
   const errors = [];
   const src = new TestFortressSource({ onError: (e) => errors.push(e.message) });
-  const p1 = freshSignedPolicy({ rule_id: 'r-1' });
-  const p2 = { rule_id: 'r-2', action: 'allow', match: {} };  // unsigned
-
-  const out = src.verifyForTest([p1, p2], [freshSigningKey()]);
-  assert.equal(out.length, 2, 'placeholder mode passes all policies');
-  assert.ok(errors.some(e => /placeholder/i.test(e)), 'loud placeholder warning fires');
+  const p1 = freshSignedPolicy({ rule_id: 'r-1' });  // signed with test signing key
+  const out = src.verifyForTest([p1], [freshSigningKey()]);  // signing key signed with test root
+  assert.equal(out.length, 0, 'strict mode drops every policy whose chain does not reach the embedded real root');
+  // Two errors expected: the signing key is rejected ("not signed by trusted root")
+  // AND the policy's signing_key_id then points to nothing valid.
+  assert.ok(errors.some(e => /not signed by trusted root/i.test(e)));
 });
 
 // The remaining tests exercise STRICT mode by injecting a "real" root.
