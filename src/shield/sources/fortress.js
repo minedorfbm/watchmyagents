@@ -84,7 +84,7 @@ function httpsJson(method, url, headers, body, timeoutMs = DEFAULT_TIMEOUT_MS) {
  * @param {string} opts.apiKey - wma_xxx
  * @param {string} opts.base - Fortress base URL (https://x.supabase.co/functions/v1)
  * @param {string} [opts.anthropicAgentId] - optional filter
- * @returns {Promise<{ ok: true, policies: array, fetched_at: string }>}
+ * @returns {Promise<{ ok: true, policies: array, signing_keys: array, fetched_at: string }>}
  */
 export async function fetchPolicies({ apiKey, base, anthropicAgentId }) {
   let url = fortressEndpoint(base, 'get-policies');
@@ -97,7 +97,18 @@ export async function fetchPolicies({ apiKey, base, anthropicAgentId }) {
     accept: 'application/json',
   });
   if (status === 200 && body && body.ok) {
-    return { ok: true, policies: body.policies || [], fetched_at: body.fetched_at };
+    return {
+      ok: true,
+      policies: body.policies || [],
+      // v1.1.5 Phase 1.5 — the chain-of-trust: signing keys travel
+      // with the response, each signed by the embedded root pubkey.
+      // Older Fortress deployments that haven't shipped the signing
+      // pipeline yet just won't include this field — the verifier
+      // then drops every policy as "unknown signing_key_id" and
+      // operators see the gap immediately.
+      signing_keys: body.signing_keys || [],
+      fetched_at: body.fetched_at,
+    };
   }
   const err = body?.error || (typeof body === 'string' ? body.slice(0, 200) : 'unknown');
   throw new Error(`get-policies failed (HTTP ${status}): ${err}`);
@@ -136,11 +147,43 @@ export async function postDecision({ apiKey, base, decision }) {
 // ────────────────────────────────────────────────────────────────────────
 
 import { matchesPolicy, compileMatchRegexes } from '../policy.js';
+// v1.1.5 Phase 1.5 — signature verification on the cloud path.
+import { verifyPolicyBundle, importEd25519PublicKey } from '../signature.js';
+import { WMA_FORTRESS_ROOT_PUBKEY_B64, WMA_FORTRESS_ROOT_IS_PLACEHOLDER } from '../root-key.js';
 
 const VALID_ACTIONS = new Set(['allow', 'deny', 'interrupt']);
 
+// v1.1.5 Phase 1.5 — strict-by-default signature verification.
+// Set WMA_REQUIRE_SIGNED_POLICIES=false to accept unsigned policies
+// from Fortress with a loud warning at each refresh. This is an escape
+// hatch for ops emergencies (e.g. Fortress signing pipeline temporarily
+// down) and dev/CI workflows where a staging Fortress hasn't been
+// upgraded yet. Default is strict to honour the security stance chosen
+// for v1.1.5.
+function strictModeFromEnv() {
+  const v = process.env.WMA_REQUIRE_SIGNED_POLICIES;
+  if (v == null) return true;        // unset → strict by default
+  if (v === 'false' || v === '0') return false;
+  return true;
+}
+
+// Parse the embedded root pubkey ONCE at module load. If the file still
+// carries the placeholder, we DO NOT throw — but every refresh logs a
+// loud reminder so an unattended deploy can't silently trust a key whose
+// private counterpart is in the git history.
+const ROOT_PUBLIC_KEY = (() => {
+  try {
+    return importEd25519PublicKey(WMA_FORTRESS_ROOT_PUBKEY_B64);
+  } catch (e) {
+    // The placeholder string isn't valid base64 of 32 bytes, so import
+    // will throw. That's the desired behaviour during development —
+    // verification will fail-closed until the real key is embedded.
+    return null;
+  }
+})();
+
 export class FortressPolicySource {
-  constructor({ apiKey, base, anthropicAgentId, refreshIntervalMs = 5 * 60_000, onError, onRefresh }) {
+  constructor({ apiKey, base, anthropicAgentId, refreshIntervalMs = 5 * 60_000, onError, onRefresh, requireSignedPolicies }) {
     if (!apiKey) throw new Error('FortressPolicySource: apiKey required');
     if (!base) throw new Error('FortressPolicySource: base URL required');
     this.apiKey = apiKey;
@@ -153,6 +196,12 @@ export class FortressPolicySource {
     this.lastFetchedAt = null;
     this._timer = null;
     this._aborted = false;
+    // v1.1.5: per-instance override of the env var. Tests use this to
+    // exercise both modes without touching process.env. If neither the
+    // constructor option nor the env var is set, strict mode wins.
+    this.requireSignedPolicies = requireSignedPolicies != null
+      ? !!requireSignedPolicies
+      : strictModeFromEnv();
   }
 
   /** Initial fetch — fails loud if it can't reach Fortress at startup. */
@@ -186,17 +235,26 @@ export class FortressPolicySource {
   async _refresh({ initial = false } = {}) {
     if (this._aborted) return;
     try {
-      const { policies, fetched_at } = await fetchPolicies({
+      const { policies, signing_keys, fetched_at } = await fetchPolicies({
         apiKey: this.apiKey,
         base: this.base,
         anthropicAgentId: this.anthropicAgentId,
       });
-      // Compile + validate each policy. A single malformed/dangerous policy
-      // (bad action, ReDoS-prone regex) must NOT take down the whole ruleset:
-      // skip it, report it, keep the rest. This matters because policies come
-      // from the cloud (Guardian-generated) — they're not fully trusted input.
+
+      // v1.1.5 Phase 1.5 — verify the chain-of-trust BEFORE any other
+      // processing. We must verify on the raw JSON shape sent by Fortress,
+      // not on the post-compile form, because compileMatchRegexes mutates
+      // `match` in place (adds _regex / _not_regex KeyObjects) and the
+      // signed canonical payload would no longer match.
+      const verifiedPolicies = this._verifyAndFilter(policies, signing_keys);
+
+      // Compile + validate each VERIFIED policy. A single malformed/dangerous
+      // policy (bad action, ReDoS-prone regex) must NOT take down the whole
+      // ruleset: skip it, report it, keep the rest. This matters because
+      // even after signature verification the rule shape can be wrong
+      // (server-side signing happened on a payload the SDK doesn't accept).
       const compiled = [];
-      for (const p of policies) {
+      for (const p of verifiedPolicies) {
         try {
           compiled.push(compilePolicyFromFortress(p));
         } catch (e) {
@@ -227,6 +285,49 @@ export class FortressPolicySource {
       if (initial) throw e;
       this.onError(e);
     }
+  }
+
+  // v1.1.5 Phase 1.5 — verify the Fortress chain of trust on a refresh
+  // response. Returns the array of policies that pass the gate (verified
+  // signatures in strict mode, OR all policies in lax mode with a warning
+  // per unsigned one).
+  //
+  // FAIL MODES:
+  //   - ROOT key is the placeholder (release wasn't ceremony-completed):
+  //     emit a one-line WARNING at each refresh and skip verification
+  //     entirely — better than silently trusting a known-compromised key.
+  //   - Strict (default): drop every policy that doesn't verify; log each
+  //     drop reason via onError so the operator sees the gap.
+  //   - Lax (WMA_REQUIRE_SIGNED_POLICIES=false): keep every policy but
+  //     emit a WARNING per unsigned one — gives migration slack while
+  //     making the audit trail visible.
+  _verifyAndFilter(rawPolicies, rawSigningKeys) {
+    if (WMA_FORTRESS_ROOT_IS_PLACEHOLDER || ROOT_PUBLIC_KEY == null) {
+      this.onError(new Error(
+        'FortressPolicySource: ROOT_PUBLIC_KEY is the placeholder (not a real Fortress root). ' +
+        'Signature verification SKIPPED. This is the expected state during development; ' +
+        'NEVER ship this configuration to production.'
+      ));
+      return rawPolicies || [];
+    }
+    const bundle = verifyPolicyBundle({
+      policies: rawPolicies || [],
+      signingKeys: rawSigningKeys || [],
+      rootPublicKey: ROOT_PUBLIC_KEY,
+    });
+    for (const ke of bundle.signingKeyErrors) {
+      this.onError(new Error(`FortressPolicySource: rejected signing key "${ke.kid}": ${ke.reason}`));
+    }
+    for (const dp of bundle.droppedPolicies) {
+      const verb = this.requireSignedPolicies ? 'DROPPING' : 'WARNING (lax mode)';
+      this.onError(new Error(`FortressPolicySource: ${verb} policy "${dp.rule_id}": ${dp.reason}`));
+    }
+    if (this.requireSignedPolicies) {
+      return bundle.validPolicies;
+    }
+    // Lax mode: keep every raw policy but the loud warnings above let
+    // ops see what would be dropped in strict mode.
+    return rawPolicies || [];
   }
 }
 

@@ -77,6 +77,33 @@ test('F-14: loadPolicies rejects default with a typo in the action name (case-se
 
 // ── v1.1.3 Phase 1.D: policy mode (enforce | shadow) ────────────────────
 
+// ── v1.1.5 Phase 1.5.E: local-policy escape-hatch marker ───────────────
+
+test('Phase 1.5.E: loadPolicies marks every local policy with __local: true', async () => {
+  const path = writeTmpPolicy({
+    policies: [
+      { id: 'p1', action: 'allow', match: {} },
+      { id: 'p2', action: 'deny', match: { tool_name: 'bash' } },
+    ],
+  });
+  const data = await loadPolicies(path);
+  assert.equal(data.policies.length, 2);
+  assert.equal(data.policies[0].__local, true);
+  assert.equal(data.policies[1].__local, true);
+  unlinkSync(path);
+});
+
+test('Phase 1.5.E: __local marker lets verifyPolicy bypass the signature requirement', async () => {
+  // Smoke test: loaded-local policy + an empty signing-key map →
+  // verifyPolicy returns ok=true via the __local short-circuit.
+  const { verifyPolicy } = await import('../src/shield/signature.js');
+  const path = writeTmpPolicy({ policies: [{ id: 'p1', action: 'allow', match: {} }] });
+  const data = await loadPolicies(path);
+  const r = verifyPolicy(data.policies[0], new Map());
+  assert.equal(r.ok, true, 'local policies pass without any signing key configured');
+  unlinkSync(path);
+});
+
 test('Phase 1.D: loadPolicies defaults policy.mode to "enforce" when omitted', async () => {
   const path = writeTmpPolicy({ policies: [{ id: 'p1', action: 'deny', match: { tool_name: 'bash' } }] });
   const data = await loadPolicies(path);

@@ -50,6 +50,13 @@ export async function loadPolicies(path) {
     if (!VALID_MODES.includes(p.mode)) {
       throw new Error(`policy ${p.id || p.name}: unsupported mode "${p.mode}" (must be one of: ${VALID_MODES.join(', ')})`);
     }
+    // v1.1.5 Phase 1.5 — mark every local-file policy so the signature
+    // verifier (src/shield/signature.js) bypasses the Ed25519 chain on
+    // these rows. Today the local path and the Fortress path are entirely
+    // separate (loadPolicies → local ruleset; FortressPolicySource →
+    // cloud ruleset) so this marker is a safety net for future refactors
+    // that might mix them. It also documents intent at read time.
+    p.__local = true;
   }
   // v1.1.2 F-14 (P2 Codex audit): validate the ruleset's default.action
   // against the SAME canonical set as per-policy actions. Before this fix
