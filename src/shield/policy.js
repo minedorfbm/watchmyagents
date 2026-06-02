@@ -68,28 +68,61 @@ export async function loadPolicies(path) {
   return data;
 }
 
-// ReDoS protection: regexes are loaded from a user-provided JSON policy file,
-// so a malicious or buggy pattern (e.g. `(a+)+$`) could pin the CPU on a long
-// input. We mitigate two ways:
+// ReDoS protection: regexes are loaded from a user-provided JSON policy file
+// (LOCAL adapter) AND from Fortress / Guardian-generated rules (FORTRESS
+// adapter), so a malicious or buggy pattern (e.g. `(a+)+$`) could pin
+// Shield's CPU on a long input — taking the whole enforcement loop down.
+// We mitigate three ways:
 //   1) Cap the maximum input length passed to any regex test to MAX_REGEX_INPUT
 //      bytes. Above that we truncate before testing. Real agent values
-//      (URLs, commands, queries) are well under this in practice.
-//   2) Reject obviously dangerous patterns at compile time (heuristic).
+//      (URLs, commands, queries, file paths) are well under this in practice.
+//   2) Reject obviously dangerous patterns at compile time (heuristic — see
+//      SUSPICIOUS_REGEX_PATTERNS below). The list errs toward false positives
+//      because Shield runs in the hot path: a rejected rule is loud (the
+//      rule is dropped at load time with a clear error) while a runaway
+//      regex would silently degrade Shield to "no enforcement" until the
+//      operator notices a CPU spike.
+//   3) Hard upper bound on the regex source length so a deeply nested
+//      pattern can't game the heuristic by spreading the gadget across
+//      thousands of chars.
 //
-// A future v0.5 may add a proper safe-regex-2 dependency for thorough analysis.
-const MAX_REGEX_INPUT = 8192;
+// Future work (v1.2+): proper RE2 or safe-regex-2 dependency for thorough
+// analysis, or moving evaluation into a worker with a hard CPU timeout.
+// We can't ship that today without breaking the zero-runtime-deps promise.
+//
+// v1.1.4 F-20 (P2 Codex audit): cap reduced from 8192 → 2048 (4×). Worst
+// realistic IoC values (URL with long query string, base64 in a path)
+// remain comfortably under 2048; the previous 8192 was a defence-in-depth
+// holdover that no real workload exercises.
+const MAX_REGEX_INPUT = 2048;
 
+// v1.1.4 F-20: heuristic list extended to catch ambiguous alternation
+// (`(a|a)*`, `(a|ab)+`, `(.|.)*`) — these don't trip the existing
+// nested-quantifier heuristic but exhibit the same exponential behavior
+// because every char has two paths to match. The new pattern rejects any
+// alternation group immediately followed by `+` or `*`; this is intentionally
+// over-broad — a customer who needs `(http|https):` should use either a
+// character class (`[a-z]+:`) or move the optional letter (`https?:`).
 const SUSPICIOUS_REGEX_PATTERNS = [
   /(\([^)]*[+*][^)]*\))[+*]/,   // (x+)+ or (x*)* — classic catastrophic backtracking
   /(\.\*){3,}/,                  // multiple .* in a row
+  // F-20: alternation inside a group, then `+` or `*` — `(a|a)*`, `(a|ab)+`,
+  // `(.|.)*`. The `[^)]*\|[^)]*` body requires at least one `|` inside the
+  // group; a single-branch group like `(foo)+` is NOT matched.
+  /\([^)]*\|[^)]*\)[+*]/,
 ];
 
 export function validateRegexString(src, where) {
   if (typeof src !== 'string') {
     throw new Error(`policy ${where}: regex must be a string`);
   }
-  if (src.length > 2000) {
-    throw new Error(`policy ${where}: regex too long (>2000 chars)`);
+  // v1.1.4 F-20: cap regex source at 1024 chars (was 2000). Real Shield
+  // policies are short (URL-prefix match, host-list deny, command-prefix
+  // check). A 1KB regex source is already an outlier; anything longer is
+  // either pathological or trying to bypass the heuristics by smuggling
+  // a gadget across many bytes.
+  if (src.length > 1024) {
+    throw new Error(`policy ${where}: regex too long (>1024 chars)`);
   }
   for (const sus of SUSPICIOUS_REGEX_PATTERNS) {
     if (sus.test(src)) {
