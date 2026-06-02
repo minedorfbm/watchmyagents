@@ -25,7 +25,6 @@
 // ANTHROPIC_API_KEY env var is used if --api-key is omitted.
 
 import { resolve } from 'node:path';
-import { createHash } from 'node:crypto';
 import { streamWithReconnect } from '../src/shield/stream.js';
 import { loadPolicies, evaluate } from '../src/shield/policy.js';
 import {
@@ -39,6 +38,12 @@ import { FortressPolicySource, postDecision } from '../src/shield/sources/fortre
 import { resolveFortressBase, fortressEndpoint } from '../src/fortress/url.js';
 import { PolicyStream } from '../src/shield/policy-stream.js';
 import { isValidAgentId, isValidSessionId } from '../src/validate.js';
+// v1.1.4 F-19 (P1 Codex audit): all egress to Fortress now flows through
+// buildFortressDecisionPayload, which normalizes tool_name via the
+// anonymizer's allowlist + salted-hash scheme and drops anything it can't
+// safely normalize. Keeps Shield's payload aligned with the README
+// promise that decisions ship fingerprints, not raw values.
+import { buildFortressDecisionPayload } from '../src/shield/upload.js';
 
 function parseArgs(argv) {
   const out = {};
@@ -133,38 +138,20 @@ async function runSessionWorker({ sessionId, ctx }) {
   // refreshes from Fortress (every 5 min) take effect without restart.
   sinfo(sessionId, `attached (${mode} mode)`);
 
-  // Helper: hash an IoC value with the customer salt (same one used by
-  // anonymizer for signals → correlates decisions to signals in Fortress).
-  // Returns null if no salt is configured (decisions still upload, just
-  // without input_hash).
-  const hashIoc = (value) => {
-    if (!signalsSalt || value == null) return null;
-    const s = typeof value === 'string' ? value : JSON.stringify(value);
-    return 'sha256:' + createHash('sha256').update(signalsSalt).update(s).digest('hex').slice(0, 32);
-  };
-
   // Helper: assemble + fire the decision push to Fortress (fire-and-forget).
+  // v1.1.4 F-19 (P1 Codex audit): delegates payload construction to the
+  // pure helper in src/shield/upload.js so the egress-side containment
+  // logic (tool_name allowlist + salted hashing) is unit-tested in
+  // isolation. The helper drops any field it cannot safely normalize
+  // (custom tool without salt, missing salt for hashes) rather than
+  // passing the raw value through.
   const fireToFortress = (rawEvent, normalized, result, decidedInMs) => {
     if (!pushDecisionToFortress) return;
-    // Extract the most relevant input value to hash (URL > command > query > path)
-    const inp = normalized?.input;
-    let inputForHash = null;
-    if (inp && typeof inp === 'object') {
-      inputForHash = inp.url || inp.command || inp.query || inp.path || inp.file_path || null;
-    }
-    pushDecisionToFortress({
-      anthropic_agent_id: agentId,
-      decision: result.decision,
-      rule_id: result.rule_id || undefined,
-      session_hash: hashIoc(sessionId) || undefined,
-      event_id_hash: hashIoc(rawEvent?.id) || undefined,
-      input_hash: hashIoc(inputForHash) || undefined,
-      action_type: normalized?.action_type || undefined,
-      tool_name: normalized?.tool_name || undefined,
-      message: result.message || result.rule_name || undefined,
-      decided_at: new Date().toISOString(),
-      decided_in_ms: decidedInMs,
-    }).catch(() => undefined);
+    const payload = buildFortressDecisionPayload({
+      agentId, sessionId, rawEvent, normalized, result, decidedInMs,
+      signalsSalt,
+    });
+    pushDecisionToFortress(payload).catch(() => undefined);
   };
 
   let processed = 0, enforced = 0, sessionInterrupted = false;
