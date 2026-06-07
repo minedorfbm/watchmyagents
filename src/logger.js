@@ -1,7 +1,20 @@
-import { mkdir, appendFile } from 'node:fs/promises';
+import { mkdir, appendFile, chmod } from 'node:fs/promises';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { assertSafePathSegment } from './validate.js';
+
+// v1.1.6 F-24 (P3 Codex audit): the `mode` option on mkdir() and
+// appendFile() is only honored when the directory or file is CREATED.
+// If a previous wma-fetch run, a different user, or a hand-rolled mkdir
+// already left those paths around with the system umask (typically
+// 0755 / 0644), the original constructor would silently keep the loose
+// perms even though SECURITY.md promises 0700 / 0600. tightenMode runs
+// after every mkdir / append to bring the existing inode in line with
+// the docs. Errors are swallowed (best-effort): the chmod is a hardening
+// pass, not a precondition — failing it shouldn't break logging.
+async function tightenMode(path, mode) {
+  try { await chmod(path, mode); } catch { /* not fatal */ }
+}
 
 // PR-B: `framework` → `provider` (canonical name per src/sources/contract.js).
 // PR-C: adds `parent_agent_id` + `composition_pattern` so any future
@@ -89,8 +102,12 @@ export class Logger {
       output: e.output ?? null,
     };
     try {
-      await mkdir(join(this.logDir, this.agentId), { recursive: true, mode: 0o700 });
+      const dir = join(this.logDir, this.agentId);
+      await mkdir(dir, { recursive: true, mode: 0o700 });
+      // v1.1.6 F-24: tighten existing perms — `mode` is creation-only.
+      await tightenMode(dir, 0o700);
       await appendFile(path, JSON.stringify(full) + '\n', { encoding: 'utf8', mode: 0o600 });
+      await tightenMode(path, 0o600);
       this.count++;
     } catch (err) {
       if (!this.silent) process.stderr.write(`[wma] log write error: ${err.message}\n`);
