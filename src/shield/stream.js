@@ -21,6 +21,20 @@ const VERSION = '2023-06-01';
 // reconnect logic — same outcome as a network error.
 const MAX_SSE_FRAME_BYTES = 1 * 1024 * 1024;
 
+// v1.1.6 F-21 (P1 Codex audit): inactivity watchdog on the SSE reader.
+// `reader.read()` blocks until the upstream sends bytes — there is no
+// built-in heartbeat check. A misbehaving proxy or compromised upstream
+// can keep the TCP connection open without ever emitting another event,
+// which freezes Shield indefinitely without triggering the reconnect
+// path in streamWithReconnect. 45 s is well above Anthropic's normal
+// inter-event latency (typically sub-second when an agent is active,
+// and the API sends SSE comment heartbeats `: ping` every ~15-30 s
+// when it's idle), so 45 s without any byte at all is a strong signal
+// the stream is dead but TCP-alive. On timeout we throw, the existing
+// try/finally releases the reader, and the caller reconnects with
+// exponential backoff.
+const SSE_INACTIVITY_TIMEOUT_MS = 45_000;
+
 function authHeaders(apiKey) {
   return {
     'x-api-key': apiKey,
@@ -50,7 +64,16 @@ export async function* openEventStream({ apiKey, sessionId, signal }) {
 
   try {
     while (true) {
-      const { done, value } = await reader.read();
+      // v1.1.6 F-21: race the reader against the inactivity watchdog so
+      // a stalled-but-open stream cannot freeze us indefinitely. We
+      // cancel the reader on timeout to release the underlying TCP
+      // resources before throwing — otherwise the pending read() would
+      // leak. The thrown error propagates to streamWithReconnect which
+      // initiates a fresh open with backoff.
+      const { done, value } = await readWithInactivityTimeout(
+        reader,
+        SSE_INACTIVITY_TIMEOUT_MS,
+      );
       if (done) break;
       buffer += decoder.decode(value, { stream: true });
       // v1.1.4 F-18 (P1 Codex audit): normalize all SSE line terminators
@@ -86,6 +109,59 @@ export async function* openEventStream({ apiKey, sessionId, signal }) {
     }
   } finally {
     try { reader.releaseLock(); } catch {}
+  }
+}
+
+/**
+ * Race a ReadableStreamDefaultReader's `.read()` against an inactivity
+ * timeout. v1.1.6 F-21 (P1 Codex audit).
+ *
+ * Why this exists: a TCP-alive but byte-silent upstream (proxy with
+ * keepalive but no SSE heartbeat, compromised endpoint, slowloris-style
+ * stall) can leave `reader.read()` pending forever, freezing Shield's
+ * event loop. Bounding the wait surfaces the stall as an error so
+ * `streamWithReconnect` initiates a fresh connection.
+ *
+ * Exported so the unit tests can hit it directly with a mock reader
+ * that never resolves.
+ *
+ * @param {ReadableStreamDefaultReader} reader
+ * @param {number} timeoutMs
+ * @returns {Promise<{ done: boolean, value?: Uint8Array }>}
+ */
+export async function readWithInactivityTimeout(reader, timeoutMs) {
+  // We deliberately avoid Promise.race here: racing two pending promises
+  // leaves the loser in a perpetual pending state, which Node's test
+  // runner (rightly) flags as a resource leak. Instead we use the
+  // Web Streams contract — `reader.cancel()` settles a pending read()
+  // to `{ done: true }` — and a simple flag to distinguish the cancel
+  // we issued from a legitimate end-of-stream.
+  let timedOut = false;
+  const timeoutId = setTimeout(() => {
+    timedOut = true;
+    // Cancel resolves the pending read() promise. We swallow any
+    // rejection from cancel (some readers throw on already-cancelled
+    // state) because the relevant error is the timeout itself.
+    Promise.resolve(reader.cancel(new Error('SSE inactivity timeout')))
+      .catch(() => undefined);
+  }, timeoutMs);
+  // NOTE: we deliberately do NOT call timeoutId.unref() here. The
+  // unref() would make the timer non-blocking for the event loop, but
+  // for a Web Stream backed by no actual I/O (e.g. unit tests, in-memory
+  // sources) Node may then consider the loop empty and never fire the
+  // timer at all — the call hangs forever. Since the timer is short-
+  // lived (single-shot, cleared on the success path), keeping it ref'd
+  // is harmless even in long-running daemons.
+  try {
+    const result = await reader.read();
+    if (timedOut) {
+      throw new Error(
+        `SSE stream stalled — no data received for ${timeoutMs}ms (caller should reconnect)`,
+      );
+    }
+    return result;
+  } finally {
+    clearTimeout(timeoutId);
   }
 }
 
