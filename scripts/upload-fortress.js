@@ -68,6 +68,16 @@ async function collectFiles(p) {
 // against a compromised or misconfigured response.
 const MAX_FORTRESS_RESPONSE_BYTES = 1 * 1024 * 1024;
 
+// v1.1.6 F-22 (P2 Codex audit): hard ceiling on a Fortress POST round
+// trip. Mirrors the timeout already enforced in src/shield/sources/
+// fortress.js. Without this, a Fortress endpoint that accepts the TCP
+// connection but stops responding mid-stream would hang the upload
+// daemon indefinitely — same SLOWLORIS class of bug F-21 fixes for
+// SSE reads. 30 s is plenty for a small JSON POST (signals payloads
+// are kilobytes); legitimate Fortress nodes reply in <1 s in steady
+// state.
+const FORTRESS_REQUEST_TIMEOUT_MS = 30_000;
+
 function postJson(url, headers, body) {
   return new Promise((resolveReq, rejectReq) => {
     const u = new URL(url);
@@ -114,6 +124,10 @@ function postJson(url, headers, body) {
       }
     );
     req.on('error', rejectReq);
+    // v1.1.6 F-22: ensure a non-responding endpoint can't hang the upload.
+    req.setTimeout(FORTRESS_REQUEST_TIMEOUT_MS, () => {
+      req.destroy(new Error(`Fortress request timed out after ${FORTRESS_REQUEST_TIMEOUT_MS}ms`));
+    });
     req.write(data);
     req.end();
   });

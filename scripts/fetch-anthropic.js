@@ -91,6 +91,11 @@ function resolveModel(agent) {
 // is misconfigured or compromised; abort.
 const MAX_FORTRESS_RESPONSE_BYTES = 1 * 1024 * 1024;
 
+// v1.1.6 F-22 (P2 Codex audit): hard ceiling on a Fortress POST round
+// trip. Same rationale as in scripts/upload-fortress.js — without this,
+// a slow/unresponsive endpoint hangs the daemon's session loop.
+const FORTRESS_REQUEST_TIMEOUT_MS = 30_000;
+
 function postJson(url, headers, body) {
   return new Promise((resolveReq, rejectReq) => {
     const u = new URL(url);
@@ -125,6 +130,11 @@ function postJson(url, headers, body) {
       });
     });
     req.on('error', rejectReq);
+    // v1.1.6 F-22: bound the round trip so a non-responding endpoint
+    // can't hang the watch daemon's upload loop.
+    req.setTimeout(FORTRESS_REQUEST_TIMEOUT_MS, () => {
+      req.destroy(new Error(`Fortress request timed out after ${FORTRESS_REQUEST_TIMEOUT_MS}ms`));
+    });
     req.write(data); req.end();
   });
 }
