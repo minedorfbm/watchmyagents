@@ -11,12 +11,29 @@ WMA needs your Anthropic API key to call the Managed Agents REST API on your beh
 | Property | Behavior |
 |---|---|
 | **Source** | Environment variable `ANTHROPIC_API_KEY` or `--api-key` CLI flag |
-| **Storage** | Held in process memory for the duration of a `wma-fetch` run. Never persisted to disk by WMA. |
+| **Storage (CLI mode)** | Held in process memory for the duration of a `wma-fetch` run. Not persisted to disk. |
+| **Storage (service mode)** | Persisted to `~/.watchmyagents/env` with mode `0600` (user-only read/write) so the launchd / systemd unit can restart the daemon without prompting. See [Service-mode credentials](#service-mode-credentials) below for the exact layout. |
 | **Network** | Sent only to `api.anthropic.com` over HTTPS with strict certificate verification (`rejectUnauthorized: true`) |
 | **Logging** | The key is never written to NDJSON logs, never printed in error messages, never included in any export |
 | **Telemetry** | WMA performs zero telemetry today. No phone-home, no usage reporting. |
 
 **Recommendation:** generate a workspace-scoped API key with read-only permissions on the agents you want to monitor. See [Anthropic Console → API Keys](https://console.anthropic.com/settings/keys).
+
+#### Service-mode credentials
+
+When you run `wma-service install`, WMA registers a launchd (macOS) or systemd (Linux) unit that needs to restart the watch daemon across reboots without human intervention. The daemon's environment is therefore loaded from a small file owned by your user account:
+
+| Path | Mode | Owner | Contents |
+|---|---|---|---|
+| `~/.watchmyagents/` | `0700` | your user | Holds the env file and the launcher shell script |
+| `~/.watchmyagents/env` | `0600` | your user | `KEY=value` lines for `ANTHROPIC_API_KEY`, `WMA_API_KEY`, `WMA_SIGNALS_SALT`, `WMA_FORTRESS_BASE_URL` |
+| `~/.watchmyagents/<label>.launcher.sh` | `0600` | your user | Reads the env file with a literal `read -r` loop (no shell interpolation), then `exec`s `wma-fetch`. |
+
+Hardening notes:
+- The launcher loads secrets with `while IFS='=' read -r k v` instead of `. file` / `source file`. Sourcing would shell-evaluate every value, so a value containing `$(cmd)` would execute at every restart. The literal read assigns the bytes verbatim.
+- Values are validated before write: a newline anywhere in a credential aborts the install (would corrupt the env file or inject extra lines).
+- To wipe the credential without uninstalling the service: `chmod 600 ~/.watchmyagents/env && : > ~/.watchmyagents/env` (the daemon will exit on the next missing-env check).
+- Full removal: `wma-service uninstall` deletes the unit, the launcher, the env file, and the `~/.watchmyagents` directory.
 
 ### Local log files
 
@@ -73,8 +90,7 @@ WMA combines **two complementary layers**:
 ## Supply chain
 
 - All code is open source on [GitHub](https://github.com/minedorfbm/watchmyagents)
-- Zero runtime dependencies (uses Node.js 18+ built-ins only)
-- One dev dependency (`@anthropic-ai/sdk`) for the optional adapter examples
+- Zero runtime AND dev dependencies (uses Node.js 18+ built-ins only). Run `npm ls --omit=dev` or check `package.json#dependencies` / `devDependencies` — both are empty.
 - Future releases will use `npm publish --provenance` for SLSA build attestation
 
 ## Reporting a vulnerability
