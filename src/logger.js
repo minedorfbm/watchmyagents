@@ -33,6 +33,10 @@ const EXPORT_FIELDS = [
   'cost_usd', 'model',
   'session_tokens', 'session_cost_usd',
   'status', 'error', 'sequence_number', 'session_id',
+  // v1.3.0 — team correlation across cooperating agents. Populated by
+  // adapters that observe handoffs (OpenAI Agents SDK, future Claude
+  // Code workflow runId). Null when unknown / no team scope.
+  'team_id',
 ];
 
 export class Logger {
@@ -107,6 +111,10 @@ export class Logger {
       session_id: this.sessionId,
       session_tokens: e.session_tokens ?? null,
       session_cost_usd: e.session_cost_usd ?? null,
+      // v1.3.0 — team correlation. Adapters that observe multi-agent
+      // groupings (OpenAI Agents SDK handoffs, future Claude Code
+      // workflow runId) populate this. Null when unknown.
+      team_id: e.team_id ?? null,
       input: e.input ?? null,
       output: e.output ?? null,
     };

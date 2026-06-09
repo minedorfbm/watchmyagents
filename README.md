@@ -86,6 +86,52 @@ total            : 811,798  (in=26 out=22,996 cache_r=492,220 cache_w=296,556)
   calls/min        : 0.08
 ```
 
+## Quickstart — instrument an OpenAI Agents SDK agent (v1.3.0+)
+
+For OpenAI agents, the runtime executes **in your process** (not on OpenAI's servers — see [docs/adapters/openai-agents-js.md](docs/adapters/openai-agents-js.md) for why). WMA is wired in as two lines:
+
+```bash
+npm install watchmyagents @openai/agents zod
+```
+
+```typescript
+import { Agent, Runner } from '@openai/agents';
+import {
+  wmaToolInputGuardrail,
+  attachWmaWatch,
+} from 'watchmyagents/src/sources/openai-agents-js.js';
+
+const wmaShield = wmaToolInputGuardrail({
+  policiesPath: './examples/policies/mitre-starter.json',
+});
+
+const agent = new Agent({
+  name: 'support_bot',
+  instructions: '...',
+  tools: [...],
+  toolInputGuardrails: [wmaShield],  // ← Shield enforcement (pre-execution deny)
+});
+
+const runner = new Runner();
+attachWmaWatch(runner);                // ← Watch observability
+
+await runner.run(agent, 'How do I reset my password?');
+```
+
+That's it. NDJSON lands in `./watchmyagents-logs/openai-agents/`. The MITRE starter bundle catches common attack patterns (T1567 exfil, T1485 destructive shell, T1548 priv-esc, …) on Day 0 — all in `mode: 'shadow'` so the first run only LOGS without enforcing. Promote to `enforce` once you've calibrated.
+
+See [docs/adapters/openai-agents-js.md](docs/adapters/openai-agents-js.md) for the full options reference + troubleshooting.
+
+## Supported runtimes (v1.3.0)
+
+| Runtime | Mode | Onboarding | Status |
+|---|---|---|---|
+| **Anthropic Managed Agents** | pull REST/SSE | API key (zero-touch) | ✓ shipped |
+| **OpenAI Agents SDK** (TypeScript/JS) | push (in-process hooks + guardrails) | 2 lines of code | ✓ v1.3.0 |
+| OpenAI Agents SDK (Python) | push (separate `watchmyagents-py` package) | — | planned v1.4.0 |
+| Claude Code (dynamic workflows) | push (hooks via `settings.json`) | — | planned v1.4.x |
+| AWS Bedrock AgentCore | pull REST/SSE | similar to Anthropic | planned v1.5.0 |
+
 ## What gets logged
 
 Each line of the NDJSON file is one agent action. The 18 `action_type` values captured today:

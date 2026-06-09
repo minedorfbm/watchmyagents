@@ -140,9 +140,15 @@ export const COMPOSITION_PATTERNS = Object.freeze({
 // name here as they land so consumers can build provider-specific UI.
 export const PROVIDERS = Object.freeze({
   ANTHROPIC_MANAGED: 'anthropic-managed',
+  // v1.3.0 (Phase 2.A) — OpenAI Agents SDK (TypeScript/JS).
+  // Customer-instrumented (not auto-discovery). Push-model via:
+  //   - Tool Input Guardrails (Shield enforcement: allow/deny/interrupt)
+  //   - RunHooks EventEmitter (Watch observability)
+  // See `./openai-agents-js.js` and `docs/adapters/openai-agents-js.md`.
+  OPENAI_AGENTS: 'openai-agents',
   // Coming next:
-  // OPENAI_AGENTS: 'openai-agents',
   // AWS_BEDROCK_AGENTCORE: 'aws-bedrock-agentcore',
+  // CLAUDE_CODE: 'claude-code',
   // LANGGRAPH: 'langgraph',
   // CREWAI: 'crewai',
 });
@@ -190,6 +196,30 @@ export const PROVIDERS = Object.freeze({
 //  * @property {string|null} agent_name             The human-named emitter of this event
 //  *                                                (the parent agent OR a sub-agent
 //  *                                                running inside the parent's session).
+//  *
+//  * TEAM CORRELATION (v1.3.0 — Phase 2.A OpenAI Agents SDK + future
+//  * Claude Code dynamic workflows):
+//  * @property {string|null} team_id                Stable identifier shared by every
+//  *                                                event in a logical group of
+//  *                                                cooperating agents. Sources:
+//  *                                                  (a) customer override via
+//  *                                                      WMA_TEAM_ID env var or
+//  *                                                      programmatic setter,
+//  *                                                  (b) auto-detected from the
+//  *                                                      OpenAI Agents SDK
+//  *                                                      `agent_handoff` event —
+//  *                                                      all agents in the handoff
+//  *                                                      chain share the same
+//  *                                                      team_id,
+//  *                                                  (c) future: Claude Code dynamic
+//  *                                                      workflow `runId`.
+//  *                                                Drives the Legions UI "Team view"
+//  *                                                drill-down. Null when unknown.
+//  *
+//  * RUNTIME-COMPUTED CONTEXT (v1.2.0 — see src/shield/context.js):
+//  *  ctx attributes (hour_of_day_utc, recent_error_rate, etc.) are NOT stored
+//  *  on WMAAction — they're computed at policy eval time and live in the
+//  *  ContextTracker only.
 //  */
 
 const REQUIRED_FIELDS = ['id', 'provider', 'agent_id', 'session_id', 'action_type', 'timestamp', 'status'];
