@@ -1,0 +1,133 @@
+{
+  "_comment_doc": "WatchMyAgents starter policy bundle — MITRE ATT&CK + ATLAS coverage. Tune to your environment before promoting from mode=shadow → mode=enforce. See docs/MITRE-ATTCK-COVERAGE.md for technique mapping. Every policy ships in shadow mode so the first run only LOGS would-be decisions without blocking — calibrate, then promote.",
+  "_comment_lifecycle": "Lifecycle: observe → shadow → enforce → retired. Per [[project_recursive_fractal_loop]], shadow is the calibration bench (Platt scaling + diff-in-diff efficacy). Promote a rule to mode=enforce only after you've seen enough shadow decisions to be confident the rule isn't false-positiving on your workload.",
+  "_comment_uses": "Uses v1.2.0+ DSL extensions (gt, in_range, length_gt) and ctx.* namespace (hour_of_day_utc, recent_error_rate, event_count_recent). Falls back gracefully on v1.1.x where unknown operators / ctx paths fail-closed (no false-allow).",
+
+  "policies": [
+    {
+      "id": "mitre-t1567-exfil-large-post",
+      "name": "T1567 Exfiltration Over Web Service — large outbound POST",
+      "action": "deny",
+      "mode": "shadow",
+      "message": "MITRE T1567: outbound POST exceeds 1MB threshold. Likely exfil channel.",
+      "match": {
+        "action_type": "tool_use",
+        "tool_name": { "in": ["web_fetch", "http_post"] },
+        "input.method": "POST",
+        "input.bytes": { "gt": 1000000 }
+      }
+    },
+
+    {
+      "id": "mitre-t1041-c2-host-allowlist",
+      "name": "T1041 Exfiltration Over C2 Channel — host allowlist",
+      "action": "deny",
+      "mode": "shadow",
+      "message": "MITRE T1041: outbound to non-allowlisted host. Replace the regex with your trusted egress hosts.",
+      "match": {
+        "action_type": "tool_use",
+        "tool_name": { "in": ["web_fetch", "http_post"] },
+        "input.url": { "not_regex": "^https://(api\\.openai\\.com|api\\.anthropic\\.com|github\\.com|api\\.github\\.com|raw\\.githubusercontent\\.com|wikipedia\\.org|en\\.wikipedia\\.org)(/|$|:[0-9]+)" }
+      }
+    },
+
+    {
+      "id": "mitre-t1485-data-destruction",
+      "name": "T1485 Data Destruction — destructive shell patterns",
+      "action": "deny",
+      "mode": "shadow",
+      "message": "MITRE T1485: destructive shell pattern (rm -rf / mkfs / dd if=).",
+      "match": {
+        "tool_name": "bash",
+        "input.command": { "regex": "(^|\\s|;|&&|\\|\\|)(rm\\s+-rf\\s|mkfs[. ]|dd\\s+if=)" }
+      }
+    },
+
+    {
+      "id": "mitre-t1548-privilege-escalation",
+      "name": "T1548 Abuse Elevation Control — sudo / pkexec / doas",
+      "action": "interrupt",
+      "mode": "shadow",
+      "message": "MITRE T1548: privilege-escalation attempt via sudo / pkexec / doas.",
+      "match": {
+        "tool_name": "bash",
+        "input.command": { "regex": "(^|\\s|;|&&|\\|\\|)(sudo|pkexec|doas)\\s" }
+      }
+    },
+
+    {
+      "id": "mitre-t1059-bash-command-length",
+      "name": "T1059 Command and Scripting Interpreter — improbably long command",
+      "action": "deny",
+      "mode": "shadow",
+      "message": "MITRE T1059: bash command exceeds 2KB — likely a base64-encoded payload or pipeline obfuscation.",
+      "match": {
+        "tool_name": "bash",
+        "input.command": { "length_gt": 2048 }
+      }
+    },
+
+    {
+      "id": "mitre-t1083-after-hours-discovery",
+      "name": "T1083 File and Directory Discovery — outside business hours (late)",
+      "action": "interrupt",
+      "mode": "shadow",
+      "message": "MITRE T1083: file discovery between 22:00 and 23:59 UTC. Tune for your business hours.",
+      "match": {
+        "tool_name": { "in": ["bash", "file_list"] },
+        "ctx.hour_of_day_utc": { "in_range": [22, 23] }
+      }
+    },
+
+    {
+      "id": "mitre-t1083-after-hours-discovery-early",
+      "name": "T1083 File and Directory Discovery — outside business hours (early)",
+      "action": "interrupt",
+      "mode": "shadow",
+      "message": "MITRE T1083: file discovery between 00:00 and 06:59 UTC. Tune for your business hours.",
+      "match": {
+        "tool_name": { "in": ["bash", "file_list"] },
+        "ctx.hour_of_day_utc": { "in_range": [0, 6] }
+      }
+    },
+
+    {
+      "id": "mitre-t1020-flailing-agent-throttle",
+      "name": "T1020 Automated Exfiltration — throttle flailing agent (high error rate)",
+      "action": "interrupt",
+      "mode": "shadow",
+      "message": "MITRE T1020: agent recent_error_rate > 0.5 across last >= 4 events — likely a runaway loop or retry storm.",
+      "match": {
+        "action_type": "tool_use",
+        "ctx.recent_error_rate": { "gt": 0.5 },
+        "ctx.event_count_recent": { "gte": 4 }
+      }
+    },
+
+    {
+      "id": "mitre-t1053-cron-persistence",
+      "name": "T1053 Scheduled Task/Job — cron / launchd persistence",
+      "action": "deny",
+      "mode": "shadow",
+      "message": "MITRE T1053: agent attempted to write a persistent task. Possible C2 persistence.",
+      "match": {
+        "tool_name": { "in": ["bash", "file_write"] },
+        "input.path": { "regex": "(crontab|/etc/cron\\.[a-z]+/|\\.crontab|/Library/LaunchAgents/|/Library/LaunchDaemons/|\\.service$|/etc/systemd/system/)" }
+      }
+    },
+
+    {
+      "id": "mitre-t1552-credential-store-read",
+      "name": "T1552 Unsecured Credentials — read of well-known credential store",
+      "action": "deny",
+      "mode": "shadow",
+      "message": "MITRE T1552: agent attempted to read a credential store. Tighten the path regex for your environment.",
+      "match": {
+        "tool_name": { "in": ["bash", "file_read"] },
+        "input.path": { "regex": "(/\\.aws/credentials|/\\.aws/config|/\\.ssh/id_[a-z]+|/\\.netrc|Library/Keychains|/etc/shadow)" }
+      }
+    }
+  ],
+
+  "default": { "action": "allow" }
+}

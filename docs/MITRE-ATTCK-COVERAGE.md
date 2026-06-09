@@ -166,4 +166,10 @@ Run the full suite: `node --test` (290+ tests as of v1.2.0).
 
 ## Customer template policies
 
-A starter pack of policies covering the most common ATT&CK techniques in this document is available in `examples/policies/mitre-starter.json` (planned for the v1.2.0 release notes). Customers should review and tune to their environment before enforcing — every blocked agent action is a potential business interruption, so we recommend running new policies in `mode: 'shadow'` first to calibrate. See [[project_recursive_fractal_loop]] for the observe → shadow → enforce → retired lifecycle.
+A starter pack of policies covering the most common ATT&CK techniques in this document is shipped at [`examples/policies/mitre-starter.json`](../examples/policies/mitre-starter.json) (available both in the GitHub repo and inside the npm tarball from v1.2.1 onward — `node_modules/watchmyagents/examples/policies/mitre-starter.json`).
+
+The bundle covers ten techniques: T1567 (exfil large POST), T1041 (C2 host allowlist), T1485 (data destruction), T1548 (privilege escalation), T1059 (oversized bash command), T1083 (after-hours discovery — late + early variants), T1020 (flailing-agent throttle via `ctx.recent_error_rate`), T1053 (cron persistence), T1552 (credential-store reads).
+
+**Every policy ships in `mode: 'shadow'`.** That's deliberate — every blocked agent action is a potential business interruption, so the first run only LOGS would-be decisions without enforcing. Calibrate against your real workload (review what would have been blocked + tune the regex thresholds), then promote each rule individually to `mode: 'enforce'`. See [[project_recursive_fractal_loop]] for the full observe → shadow → enforce → retired lifecycle.
+
+The starter is validated against the policy engine on every release (see `test/mitre-starter.test.js`) — if a regex falls afoul of the ReDoS heuristic in a future change or the lifecycle invariant breaks, the test suite blocks the release.

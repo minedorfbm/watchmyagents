@@ -12,6 +12,7 @@
     "scripts/upload-fortress.js",
     "scripts/service.js",
     "scripts/agents.js",
+    "examples/policies/",
     "README.md",
     "SECURITY.md",
     "LICENSE"
