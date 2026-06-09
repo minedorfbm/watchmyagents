@@ -4,12 +4,31 @@
 // file as Watch, with action_type: "shield_decision". This closes the
 // recursive loop trivially — the next wma-fetch / wma-inspect run will
 // surface Shield's actions alongside the agent's actions.
+//
+// v1.2.0 — every shield_decision row carries a SHA-256 audit chain
+// (prev_hash + chain_hash). Watch rows in the same file carry no chain
+// fields, so verifyDecisionChain() must be given the filtered subset
+// `records.filter(r => r.action_type === 'shield_decision')`. See
+// src/shield/decision-chain.js for the chain format + verifier.
 
 import { Logger } from '../logger.js';
+import { createDecisionChain, buildGenesisMarker, newChainId } from './decision-chain.js';
 
 export class DecisionLogger {
   constructor({ logDir, agentId, sessionId }) {
-    this._logger = new Logger({ logDir, agentId, sessionId, silent: true });
+    // Each DecisionLogger instance owns a single chain segment. A Shield
+    // restart creates a fresh DecisionLogger → fresh genesis. The
+    // genesis marker is self-describing (agent + session + start time +
+    // chain id) so forensics can attribute segments to processes.
+    const chain = createDecisionChain({
+      genesis: buildGenesisMarker({
+        agentId,
+        sessionId,
+        startedAtIso: new Date().toISOString(),
+        chainId: newChainId(),
+      }),
+    });
+    this._logger = new Logger({ logDir, agentId, sessionId, silent: true, chain });
   }
 
   // Record a decision Shield made about an upstream event. Shield's own

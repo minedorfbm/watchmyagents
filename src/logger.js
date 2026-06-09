@@ -41,7 +41,15 @@ export class Logger {
   //                Audit-grade default: refuse to silently lose events. Disk
   //                full / EACCES / EINVAL must propagate so callers know.
   //                Opt into bestEffort=true only for non-critical paths.
-  constructor({ logDir, agentId, sessionId, silent, bestEffort } = {}) {
+  // `chain`      : v1.2.0 — optional decision-chain instance (see
+  //                src/shield/decision-chain.js). When set, every record
+  //                written through this logger gets prev_hash + chain_hash
+  //                appended, building a tamper-evident audit chain. Today
+  //                this is only enabled by DecisionLogger (shield_decision
+  //                rows). Watch's Loggers leave it null so Watch rows have
+  //                no chain fields — verifyDecisionChain() filters by
+  //                action_type, so both kinds of rows coexist cleanly.
+  constructor({ logDir, agentId, sessionId, silent, bestEffort, chain } = {}) {
     // agentId becomes a filesystem path segment (logDir/<agentId>/…). Reject
     // anything that could traverse out of logDir before we ever build a path.
     assertSafePathSegment(agentId, 'agentId');
@@ -50,6 +58,7 @@ export class Logger {
     this.sessionId = sessionId || randomUUID();
     this.silent = silent !== false;
     this.bestEffort = bestEffort === true;
+    this.chain = chain || null;
     this.sequence = 0;
     this.currentDay = null;
     this.currentPath = null;
@@ -101,12 +110,17 @@ export class Logger {
       input: e.input ?? null,
       output: e.output ?? null,
     };
+    // v1.2.0 — if a decision chain is attached, wrap the composed record
+    // so it carries prev_hash + chain_hash. The wrap is computed over the
+    // canonical body that ends up on disk; the verifier reproduces the
+    // same hash by reading the file. See src/shield/decision-chain.js.
+    const toWrite = this.chain ? this.chain.wrap(full) : full;
     try {
       const dir = join(this.logDir, this.agentId);
       await mkdir(dir, { recursive: true, mode: 0o700 });
       // v1.1.6 F-24: tighten existing perms — `mode` is creation-only.
       await tightenMode(dir, 0o700);
-      await appendFile(path, JSON.stringify(full) + '\n', { encoding: 'utf8', mode: 0o600 });
+      await appendFile(path, JSON.stringify(toWrite) + '\n', { encoding: 'utf8', mode: 0o600 });
       await tightenMode(path, 0o600);
       this.count++;
     } catch (err) {
@@ -115,7 +129,7 @@ export class Logger {
       // Disk full, EACCES, EINVAL etc. should NOT be silently swallowed.
       if (!this.bestEffort) throw err;
     }
-    return full;
+    return toWrite;
   }
 
   toExportRecord(entry) {
