@@ -27,6 +27,7 @@
 import { resolve } from 'node:path';
 import { streamWithReconnect } from '../src/shield/stream.js';
 import { loadPolicies, evaluate } from '../src/shield/policy.js';
+import { createContextTracker } from '../src/shield/context.js';
 import {
   confirmAllow, confirmDeny, interruptSession,
   getAgentConfig, detectAlwaysAsk,
@@ -155,6 +156,15 @@ async function runSessionWorker({ sessionId, ctx }) {
   };
 
   let processed = 0, enforced = 0, sessionInterrupted = false;
+
+  // v1.2.0 — per-session context tracker. Feeds runtime attributes
+  // (hour_of_day_utc, agent_age_minutes, recent_error_rate, …) into the
+  // policy engine so rules can express context-aware authorization (see
+  // src/shield/context.js + test/policy-context.test.js). Lives entirely
+  // in process memory; nothing is forwarded to Fortress — Containment
+  // doctrine preserved.
+  const policyTracker = createContextTracker({ recentWindowSize: 20 });
+
   // Cache is only needed for tool_confirmation mode (lookup by event_id when
   // requires_action fires). Interrupt mode evaluates synchronously and never
   // reads the cache, so caching there would just leak memory on long sessions.
@@ -197,9 +207,14 @@ async function runSessionWorker({ sessionId, ctx }) {
       if (mode === 'interrupt' && CACHEABLE_TOOL_TYPES.has(rawEvent.type)) {
         // No caching in interrupt mode — react synchronously, free memory.
         const normalized = normalizeForPolicy(rawEvent);
+        // v1.2.0 — compute policy context BEFORE evaluate so rules see
+        // PRIOR history (recent_error_rate, agent_age_minutes, …), then
+        // record AFTER so the next event sees this one in its window.
+        const policyCtx = policyTracker.compute(rawEvent);
         const t0 = Date.now();
-        const result = evaluate(normalized, ctx.ruleset);
+        const result = evaluate(normalized, ctx.ruleset, policyCtx);
         const decidedInMs = Date.now() - t0;
+        policyTracker.record(rawEvent);
 
         // v1.1.3 Phase 1.D — mode badge in the log line for operator visibility.
         const modeTag = result.mode === 'shadow' ? ' [SHADOW]' : '';
@@ -266,9 +281,13 @@ async function runSessionWorker({ sessionId, ctx }) {
           }
 
           const normalized = normalizeForPolicy(sourceEvent);
+          // v1.2.0 — see interrupt-mode block above for the compute /
+          // record ordering rationale.
+          const policyCtx = policyTracker.compute(sourceEvent);
           const t0 = Date.now();
-          const result = evaluate(normalized, ctx.ruleset);
+          const result = evaluate(normalized, ctx.ruleset, policyCtx);
           const decidedInMs = Date.now() - t0;
+          policyTracker.record(sourceEvent);
 
           // v1.1.3 Phase 1.D — mode badge in the log line for operator visibility.
           const modeTag = result.mode === 'shadow' ? ' [SHADOW]' : '';

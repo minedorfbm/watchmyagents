@@ -230,18 +230,34 @@ function matchValue(value, condition) {
 // Evaluate a single policy against an event. Returns true iff every match
 // clause is satisfied. A match clause with an undefined target field still
 // counts as "no match" rather than "any match".
-export function matchesPolicy(event, policy) {
+//
+// v1.2.0 — `ctx` is an optional second namespace for runtime-computed
+// attributes (hour_of_day_utc, agent_age_minutes, recent_error_rate,
+// session_duration_ms — see src/shield/context.js). Field paths in the
+// `match` clause that start with the reserved prefix `ctx.` resolve from
+// ctx rather than event. Everything else still resolves from event, so
+// existing policies keep working unchanged.
+//
+// The `ctx.` prefix is a reserved namespace: WMA-normalized events never
+// have a top-level `ctx` field (normalizeForPolicy never sets one), so
+// there's no risk of shadowing. If a future Anthropic event shape ever
+// has one, callers can rename their context attributes.
+export function matchesPolicy(event, policy, ctx = {}) {
   for (const [field, condition] of Object.entries(policy.match || {})) {
-    const value = getNested(event, field);
+    const value = field.startsWith('ctx.')
+      ? getNested(ctx, field.slice(4))
+      : getNested(event, field);
     if (!matchValue(value, condition)) return false;
   }
   return true;
 }
 
 // First-match-wins evaluation. Returns the policy decision and metadata.
-export function evaluate(event, ruleset) {
+// v1.2.0 — accepts an optional `ctx` for runtime-computed attributes;
+// see matchesPolicy() above. Omitting ctx preserves v1.1.x behavior.
+export function evaluate(event, ruleset, ctx = {}) {
   for (const policy of ruleset.policies) {
-    if (matchesPolicy(event, policy)) {
+    if (matchesPolicy(event, policy, ctx)) {
       return {
         decision: policy.action,
         rule_id: policy.id || null,
