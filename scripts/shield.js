@@ -203,18 +203,35 @@ async function runSessionWorker({ sessionId, ctx }) {
     })) {
       processed++;
 
+      // v1.2.1 F-26 (P1 Codex audit on v1.2.0): record EVERY event
+      // flowing through Shield, not just the cacheable tool_use ones.
+      // The previous wiring only called record() inside the cacheable
+      // branches, so events that DO carry the is_error / error / content
+      // tool_result markers (which arrive as a DIFFERENT event type
+      // from the upstream tool_use) never reached the tracker. Result
+      // in production: ctx.recent_error_rate stayed pinned at 0 even
+      // when the agent's tools were failing constantly, making the
+      // "throttle a flailing agent" policy class effectively a no-op.
+      //
+      // Implementation note: try/finally guarantees record() runs even
+      // when the cacheable branches `continue;` out mid-iteration. The
+      // finally executes BEFORE the continue takes effect (JS spec), so
+      // the compute() calls below — which must see PRIOR history only —
+      // still observe the correct window.
+      try {
+
       // ── INTERRUPT MODE ──────────────────────────────────────────────
       if (mode === 'interrupt' && CACHEABLE_TOOL_TYPES.has(rawEvent.type)) {
         // No caching in interrupt mode — react synchronously, free memory.
         const normalized = normalizeForPolicy(rawEvent);
         // v1.2.0 — compute policy context BEFORE evaluate so rules see
-        // PRIOR history (recent_error_rate, agent_age_minutes, …), then
-        // record AFTER so the next event sees this one in its window.
+        // PRIOR history (recent_error_rate, agent_age_minutes, …). The
+        // finally at the end of this iteration records the event so the
+        // NEXT iteration sees this one in its window.
         const policyCtx = policyTracker.compute(rawEvent);
         const t0 = Date.now();
         const result = evaluate(normalized, ctx.ruleset, policyCtx);
         const decidedInMs = Date.now() - t0;
-        policyTracker.record(rawEvent);
 
         // v1.1.3 Phase 1.D — mode badge in the log line for operator visibility.
         const modeTag = result.mode === 'shadow' ? ' [SHADOW]' : '';
@@ -282,12 +299,14 @@ async function runSessionWorker({ sessionId, ctx }) {
 
           const normalized = normalizeForPolicy(sourceEvent);
           // v1.2.0 — see interrupt-mode block above for the compute /
-          // record ordering rationale.
+          // record ordering rationale. sourceEvent here was the original
+          // tool_use rawEvent at an earlier loop iteration, and was
+          // recorded by THAT iteration's finally — so compute() correctly
+          // sees it as PRIOR history, not as the current event.
           const policyCtx = policyTracker.compute(sourceEvent);
           const t0 = Date.now();
           const result = evaluate(normalized, ctx.ruleset, policyCtx);
           const decidedInMs = Date.now() - t0;
-          policyTracker.record(sourceEvent);
 
           // v1.1.3 Phase 1.D — mode badge in the log line for operator visibility.
           const modeTag = result.mode === 'shadow' ? ' [SHADOW]' : '';
@@ -349,6 +368,21 @@ async function runSessionWorker({ sessionId, ctx }) {
       if (rawEvent.type === 'session.status_terminated') {
         sinfo(sessionId, `session terminated: ${rawEvent.stop_reason?.type || 'unknown'}`);
         break;
+      }
+
+      } finally {
+        // v1.2.1 F-26: record EVERY event into the policy tracker so
+        // recent_error_rate reflects real tool failures (which arrive
+        // as tool_result events carrying is_error: true, NOT as the
+        // upstream tool_use events). defaultIsError() inside the
+        // tracker handles the is_error / error / content[].is_error /
+        // type-contains-'error' shapes — see src/shield/context.js.
+        //
+        // Order: every compute() call above happens BEFORE this
+        // record() (JS guarantees finally runs after try-body but
+        // before continue/break take effect), so the "PRIOR history"
+        // contract of recent_error_rate is preserved.
+        policyTracker.record(rawEvent);
       }
     }
   } catch (e) {
