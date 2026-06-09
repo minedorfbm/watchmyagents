@@ -184,6 +184,44 @@ function matchValue(value, condition) {
   if (condition._regex_any !== undefined) {
     return condition._regex_any.some(r => safeRegexTest(r, value));
   }
+  // v1.2.0 — DSL extensions for ABAC / parameter validation.
+  // Numeric comparators are strict: a non-finite VALUE or a non-finite
+  // CONDITION operand fails-closed. Same as the regex branch: we never
+  // coerce or guess intent for a malformed policy.
+  if (Number.isFinite(condition.gt)) {
+    return Number.isFinite(value) && value > condition.gt;
+  }
+  if (Number.isFinite(condition.gte)) {
+    return Number.isFinite(value) && value >= condition.gte;
+  }
+  if (Number.isFinite(condition.lt)) {
+    return Number.isFinite(value) && value < condition.lt;
+  }
+  if (Number.isFinite(condition.lte)) {
+    return Number.isFinite(value) && value <= condition.lte;
+  }
+  // in_range: tuple [min, max] inclusive both sides. An inverted tuple
+  // (min > max) fails-closed — most likely an operator typo, never a
+  // legitimate "match nothing" intent.
+  if (Array.isArray(condition.in_range) && condition.in_range.length === 2) {
+    const [min, max] = condition.in_range;
+    if (!Number.isFinite(min) || !Number.isFinite(max) || min > max) return false;
+    return Number.isFinite(value) && value >= min && value <= max;
+  }
+  // length_* operators apply to strings or arrays. Anything else (object,
+  // number, null) fails-closed — length is meaningless there.
+  if (Number.isFinite(condition.length_gt)) {
+    return (typeof value === 'string' || Array.isArray(value)) && value.length > condition.length_gt;
+  }
+  if (Number.isFinite(condition.length_gte)) {
+    return (typeof value === 'string' || Array.isArray(value)) && value.length >= condition.length_gte;
+  }
+  if (Number.isFinite(condition.length_lt)) {
+    return (typeof value === 'string' || Array.isArray(value)) && value.length < condition.length_lt;
+  }
+  if (Number.isFinite(condition.length_lte)) {
+    return (typeof value === 'string' || Array.isArray(value)) && value.length <= condition.length_lte;
+  }
   // Unknown condition shape — defensive: fail-closed (no match) so unknown
   // conditions never silently allow events.
   return false;
