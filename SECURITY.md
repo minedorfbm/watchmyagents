@@ -81,7 +81,7 @@ WMA combines **two complementary layers**:
 ### What WMA does NOT defend against
 
 - **A compromised host.** If an attacker has read access to your user account, they can read the log files. Consider encryption at rest (filesystem-level, or future opt-in via `age`) for sensitive environments.
-- **Tampering with local logs.** Files are append-only by convention, not enforced. A future release will add a per-line hash chain for tamper-evident audit.
+- **Tampering with local logs (full coverage).** As of v1.2.0, `shield_decision` rows carry a SHA-256 hash chain (`prev_hash` + `chain_hash`) — `verifyDecisionChain()` detects in-place modification, mid-chain deletion, and insertion. This is **local tamper-evidence**, not tamper-proof: (a) tail truncation (removing the most recent rows) is invisible to an append-only chain, and (b) an attacker with the Shield binary can mint a fresh chain from scratch by re-executing. Both gaps are closed by Fortress-side append-only ingest (planned). Watch's non-decision rows (tool_use, etc.) remain append-only-by-convention and are NOT chained.
 - **Shield being killed.** Shield is an external process. If killed, the agent runs without enforcement until Shield restarts. Run under a process supervisor (systemd, pm2, docker `restart: always`) in production.
 - **Pre-installation activity.** Shield only enforces from the moment it attaches forward. Past events are not retroactively replayed or re-evaluated.
 - **A malicious policy file.** Shield's policy engine refuses obviously unsafe regex patterns (e.g. catastrophic backtracking) and truncates inputs before regex tests to mitigate ReDoS. But a user-controlled policy file remains a code-adjacent input — treat it as you would treat sourcecode.

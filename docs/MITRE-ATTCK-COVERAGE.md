@@ -24,7 +24,7 @@ WMA is a **runtime control plane** for autonomous AI agents. It sees every tool 
 - Replace endpoint EDR or network controls. The agent runs on a customer-owned machine; WMA sees the agent's actions, not OS-level syscalls.
 - Audit pre-installation activity. Shield is forward-looking only — see [[feedback_shield_post_install_only]].
 
-What WMA does cover is the agent layer: parameter validation, behavioral throttling, exfil prevention, action-graph tamper-evidence, and a continuous Watch→Guardian→Shield loop.
+What WMA does cover is the agent layer: parameter validation, behavioral throttling, exfil prevention, **local** audit-chain tamper-evidence (see §T1070 for the precise scope — Shield's NDJSON is hash-chained per process; truncation and binary-replay are out-of-scope for the local chain), and a continuous Watch→Guardian→Shield loop.
 
 ---
 
@@ -62,7 +62,7 @@ WMA does not see the path by which a malicious instruction reaches the agent. If
 
 | Technique | WMA capability | Grade |
 |---|---|---|
-| **T1070 Indicator Removal** (agent deleting its own logs) | v1.2.0 audit chain (prev_hash + chain_hash on shield_decision NDJSON). Any post-write tamper of decision log is detected by `verifyDecisionChain()`. Truncation is a known limitation (documented). | **Detect** |
+| **T1070 Indicator Removal** (agent deleting its own logs) | **Local tamper-evidence only.** v1.2.0 audit chain (prev_hash + chain_hash on shield_decision NDJSON, SHA-256, per Shield process). `verifyDecisionChain()` detects in-place modification, mid-chain deletion, and insertion at the exact index. Out of scope locally: (a) tail truncation — append-only chains can't detect removal of the most recent rows from the end; (b) binary-replay — an attacker who can re-execute the Shield binary can mint a fresh chain from scratch. Both gaps are closed by Fortress-side append-only ingest (planned). Until then, this is "tamper-evident", not "tamper-proof". | **Detect (local only)** |
 | **T1562 Impair Defenses** (agent disabling WMA) | Service supervision via launchd/systemd respawn. Watch records `wma-shield` lifecycle events to its NDJSON. | **Detect** |
 | **T1027 Obfuscated Files** (base64-encoded payloads) | Watch captures full tool_input locally (Containment). Shield policy can match `length_gt` on suspicious fields. Doesn't decode base64 — heuristic only. | **Partial** |
 
