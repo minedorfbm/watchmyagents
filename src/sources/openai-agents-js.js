@@ -827,7 +827,12 @@ export const adapterMeta = Object.freeze({
   compositionDefault: COMPOSITION_PATTERNS.SOLO,
   customerInstrumented: true,                // not auto-discovery
   peerPackage: '@openai/agents',
-  minPeerVersion: '0.1.0',                    // adjust after testing
+  // v1.4 F-33 — aligned with package.json#peerDependencies range
+  // `^0.2.0`. Real fixtures captured against 0.2.x verified the
+  // lifecycle event signatures in v1.3.0; minPeerVersion below that is
+  // unsupported and may show drift in args layout (the AgentHooks vs
+  // RunHooks gap that motivated the v1.3.0 finalize commit).
+  minPeerVersion: '0.2.0',
   capabilities: Object.freeze({
     watch: true,
     shield: true,

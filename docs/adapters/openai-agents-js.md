@@ -196,7 +196,7 @@ Tool arguments and results stay LOCAL. The anonymizer converts WMAAction → sig
 
 - Node.js: **20+** (matches the WMA SDK baseline and `@openai/agents`'s requirement)
 - TypeScript: any version — types live in `src/sources/openai-agents-js.d.ts`
-- `@openai/agents` version range: tested against `^x.y` (verified in CI against the version pinned in our integration fixtures — see `test/fixtures/openai-agents-events/README.md`)
+- `@openai/agents` version range: **`^0.2.0`** (declared in `package.json#peerDependencies`). Real fixtures in `test/fixtures/openai-agents-events/` were captured against 0.2.x and the adapter's lifecycle event signatures match that line. Older 0.1.x lacked AgentHooks ergonomics the adapter relies on.
 
 ## Limits + known gaps (v1.3.0)
 
