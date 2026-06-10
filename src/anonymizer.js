@@ -156,17 +156,65 @@ export function normalizeToolInput(rawInput, aliases = {}) {
 // programmatically reference the contract.
 export { HASHABLE_INPUT_FIELDS };
 
+// ── Heuristic field-name patterns (v1.3.1 F-30 Codex audit on v1.3.0) ───
+//
+// HASHABLE_INPUT_FIELDS is the canonical set; adapter authors are also
+// encouraged to call `normalizeToolInput()` to map their native names.
+// But OpenAI Agents SDK customers define their own tool argument names
+// (`endpoint_url`, `shell_cmd`, `requestUrl`, …) and rarely think to
+// register aliases. The result before v1.3.1: those fields silently
+// disappeared from Fortress signals — not a leak (the raw payload stays
+// LOCAL), but a detection blind spot.
+//
+// This heuristic catches the long tail. For each non-canonical input
+// field, if its NAME matches a common suffix/word pattern, hash its
+// value as if it were the corresponding canonical field. Conservative
+// by design: regex anchored to word/suffix boundaries (`_url` matches,
+// `urlsafe` does NOT) so we err toward false positives (hashing a
+// harmless field is fine) over false negatives (missing a sensitive
+// field is the bug we're fixing).
+//
+// Add new patterns here when adapters surface new common names.
+const HEURISTIC_FIELD_PATTERNS = Object.freeze({
+  url:     /(?:^|[_-])(?:url|uri|endpoint|webhook|address)$/i,
+  command: /(?:^|[_-])(?:cmd|command|shell|exec|script)$/i,
+  path:    /(?:^|[_-])(?:path|file|filename|filepath|dir|folder)$/i,
+  query:   /(?:^|[_-])(?:query|search|q|prompt|term)$/i,
+});
+
+function fieldMatchesCanonicalByHeuristic(fieldName, canonical) {
+  const pat = HEURISTIC_FIELD_PATTERNS[canonical];
+  return pat ? pat.test(fieldName) : false;
+}
+
 // ── Single-entry extractor: what hashable IoCs are in this entry? ────────
 
 function extractIocs(entry, salt) {
   const out = [];
   if (!entry.input || typeof entry.input !== 'object') return out;
+
+  // Exact canonical match (original v1.0+ behavior — backwards compat).
   for (const field of HASHABLE_INPUT_FIELDS) {
     const v = entry.input[field];
     if (typeof v === 'string' && v.length > 0) {
       out.push(hashWithSalt(v, salt));
     }
   }
+
+  // v1.3.1 F-30 — heuristic suffix matching for non-canonical field
+  // names common to OpenAI Agents SDK / LangGraph / CrewAI tools. Skip
+  // fields already handled above so we never double-hash.
+  for (const [key, v] of Object.entries(entry.input)) {
+    if (HASHABLE_INPUT_FIELDS.includes(key)) continue;
+    if (typeof v !== 'string' || v.length === 0) continue;
+    for (const canonical of HASHABLE_INPUT_FIELDS) {
+      if (fieldMatchesCanonicalByHeuristic(key, canonical)) {
+        out.push(hashWithSalt(v, salt));
+        break; // one canonical bucket per field — first match wins
+      }
+    }
+  }
+
   return out;
 }
 
