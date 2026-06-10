@@ -242,6 +242,62 @@ test('F-32: small results pass through unchanged', () => {
   assert.deepEqual(evt.output, { text: '{"ok":true}' });
 });
 
+// Codex #4 (v1.4) — toolInputs per-tool alias map
+test('Codex #4: toolInputs maps native field name to canonical', () => {
+  const toolInputs = {
+    fetch_url: { endpoint_url: 'url' },
+  };
+  const evt = normalizeToolStart({
+    agent: { name: 'bot' },
+    tool: { name: 'fetch_url' },
+    toolCall: {
+      callId: 'c1',
+      name: 'fetch_url',
+      arguments: JSON.stringify({ endpoint_url: 'https://api.example/x' }),
+    },
+    sessionId: 's', teamId: 't',
+    toolInputs,
+  });
+  // Canonical 'url' is now populated from endpoint_url
+  assert.equal(evt.input.url, 'https://api.example/x');
+  // Native field is preserved (normalizeToolInput does not strip it)
+  assert.equal(evt.input.endpoint_url, 'https://api.example/x');
+});
+
+test('Codex #4: toolInputs unmapped tool falls back to raw input', () => {
+  const toolInputs = { other_tool: { foo: 'url' } };
+  const evt = normalizeToolStart({
+    agent: { name: 'bot' },
+    tool: { name: 'fetch_url' },  // not in toolInputs
+    toolCall: {
+      callId: 'c1',
+      name: 'fetch_url',
+      arguments: JSON.stringify({ endpoint_url: 'https://api.example/x' }),
+    },
+    sessionId: 's', teamId: 't',
+    toolInputs,
+  });
+  // No alias applied → endpoint_url stays; canonical url NOT populated
+  assert.equal(evt.input.url, undefined);
+  assert.equal(evt.input.endpoint_url, 'https://api.example/x');
+});
+
+test('Codex #4: toolInputs option missing → backwards-compat (no transform)', () => {
+  const evt = normalizeToolStart({
+    agent: { name: 'bot' },
+    tool: { name: 'fetch_url' },
+    toolCall: {
+      callId: 'c1',
+      name: 'fetch_url',
+      arguments: JSON.stringify({ endpoint_url: 'https://api.example/x' }),
+    },
+    sessionId: 's', teamId: 't',
+    // no toolInputs
+  });
+  assert.equal(evt.input.endpoint_url, 'https://api.example/x');
+  assert.equal(evt.input.url, undefined);
+});
+
 // ── ToolGuardrailFunctionOutputFactory (shape match @openai/agents) ────
 
 test('factory: allow returns the documented shape', () => {

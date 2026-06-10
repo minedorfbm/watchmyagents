@@ -55,6 +55,7 @@ import { evaluate, loadPolicies } from '../shield/policy.js';
 import { createContextTracker } from '../shield/context.js';
 import { DecisionLogger } from '../shield/decisions.js';
 import { Logger } from '../logger.js';
+import { normalizeToolInput } from '../anonymizer.js';
 
 // ── Constants ──────────────────────────────────────────────────────────
 
@@ -331,8 +332,18 @@ export function normalizeAgentHandoff({ fromAgent, toAgent, sessionId, teamId })
   });
 }
 
-export function normalizeToolStart({ agent, tool, toolCall, sessionId, teamId }) {
+export function normalizeToolStart({ agent, tool, toolCall, sessionId, teamId, toolInputs }) {
   const parsedArgs = safeParseToolArgs(toolCall?.arguments);
+  // v1.4 Codex #4 — per-tool argument aliases. If `toolInputs` is
+  // provided AND has an entry for this tool's name, apply the alias
+  // map via normalizeToolInput() from the anonymizer. The result
+  // populates canonical names (`url`, `query`, `command`, `path`,
+  // `file_path`) so the SignalsAggregator hashes them EXACTLY, not
+  // via the F-30 suffix heuristic (which is the opt-out safety net,
+  // not the precision path). Both layers coexist: explicit aliases
+  // win on declared fields; heuristic catches the long tail.
+  const aliases = toolInputs && tool?.name ? toolInputs[tool.name] : null;
+  const finalInput = aliases ? normalizeToolInput(parsedArgs, aliases) : parsedArgs;
   return Object.freeze({
     id: makeEventId(toolCall),
     provider: PROVIDER,
@@ -349,7 +360,7 @@ export function normalizeToolStart({ agent, tool, toolCall, sessionId, teamId })
     parent_agent_id: null,
     composition_pattern: COMPOSITION_PATTERNS.SOLO,
     team_id: teamId,
-    input: parsedArgs,
+    input: finalInput,
     output: null,
   });
 }
@@ -501,6 +512,10 @@ export function wmaToolInputGuardrail(options = {}) {
           toolCall,
           sessionId,
           teamId: getTeamId(),
+          // v1.4 Codex #4 — per-tool alias map (option `toolInputs`).
+          // Threaded through so the anonymizer hashes by canonical name
+          // for tools the customer explicitly mapped.
+          toolInputs: options.toolInputs,
         });
 
         // 2. Compute policy context BEFORE evaluation so recent_error_rate
@@ -662,6 +677,7 @@ export function attachWmaWatch(runner, options = {}) {
         const teamId = teamTracker.resolve(sessionId) || teamTracker.bootstrap(sessionId);
         const event = normalizeToolStart({
           agent, tool, toolCall: details?.toolCall, sessionId, teamId,
+          toolInputs: options.toolInputs,  // v1.4 Codex #4
         });
         await logger.write(event);
       } catch (e) {
@@ -786,6 +802,7 @@ export function attachWmaWatchToAgent(agent, options = {}) {
         const teamId = teamTracker.resolve(sessionId) || teamTracker.bootstrap(sessionId);
         const event = normalizeToolStart({
           agent, tool, toolCall: details?.toolCall, sessionId, teamId,
+          toolInputs: options.toolInputs,  // v1.4 Codex #4
         });
         await logger.write(event);
       } catch (e) {
