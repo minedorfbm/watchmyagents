@@ -110,6 +110,17 @@ function makeSessionId() {
   return `oai-${randomUUID()}`;
 }
 
+// v1.4 F-31 — short reference code minted per Shield internal error.
+// Returned to the model as `Ref: WMA-SHL-<8hex>` and logged to stderr
+// alongside the full err.message so an operator can correlate the
+// generic model-facing message to the local detailed log without
+// leaking the raw error to the model.
+function makeErrorRef() {
+  // 8 hex chars from a fresh UUID — wide enough to deconflict within
+  // a session, short enough to be readable in a tool result.
+  return `WMA-SHL-${randomUUID().replace(/-/g, '').slice(0, 8)}`;
+}
+
 // Derive a stable, monotonic event id from the SDK's tool_call id when
 // present (so deduplication after restart works), else mint a UUID.
 function makeEventId(toolCall) {
@@ -467,17 +478,39 @@ export function wmaToolInputGuardrail(options = {}) {
         // Shield internal failure (policy file unreadable, disk full on
         // log write, etc.). Default fail-CLOSED unless customer opted
         // into fail-OPEN.
+        //
+        // v1.4 F-31 (P2 Codex audit on v1.3.0): the agent must NOT see
+        // the raw err.message — it can carry local paths, policy file
+        // names, disk-mount strings, permission codes, or even fragments
+        // of the policy itself that should never reach a model context.
+        // We mint a short reference code, log the full error locally to
+        // stderr keyed by that code, and return a generic message that
+        // operators can correlate against the local log without exposing
+        // anything actionable to the model. The outputInfo (which is NOT
+        // surfaced to the model — it stays in the application's run
+        // metadata) keeps the err.message for SDK-side tracing.
+        const errorRef = makeErrorRef();
         process.stderr.write(
-          `[wma/openai-agents] guardrail error: ${err.message}\n`,
+          `[wma/openai-agents] [${errorRef}] guardrail error: ${err.message}\n`,
         );
         if (failOpen) {
           return ToolGuardrailFunctionOutputFactory.allow({
-            wma: { error: err.message, failOpenApplied: true },
+            wma: {
+              errorRef,
+              error: err.message,
+              failOpenApplied: true,
+            },
           });
         }
         return ToolGuardrailFunctionOutputFactory.rejectContent(
-          `WMA Shield error: ${err.message} (fail-closed)`,
-          { wma: { error: err.message, failOpenApplied: false } },
+          `WMA Shield internal error (fail-closed). Ref: ${errorRef}`,
+          {
+            wma: {
+              errorRef,
+              error: err.message,
+              failOpenApplied: false,
+            },
+          },
         );
       }
     },

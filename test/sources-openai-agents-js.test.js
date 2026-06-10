@@ -401,6 +401,51 @@ test('guardrail: fail-open when opted in explicitly', async () => {
   });
 });
 
+// F-31 (v1.4, P2 Codex audit on v1.3.0) — error message must not leak details
+test('F-31: fail-closed message hides raw err.message from the model (generic + ref code)', async () => {
+  await withTempLogDir(async (logDir) => {
+    const SECRET_PATH = '/etc/shadow/super-secret-policy-file.json';
+    const trapRuleset = {
+      get policies() { throw new Error(`cannot read ${SECRET_PATH}: EACCES`); },
+      default: { action: 'allow' },
+    };
+    const g = wmaToolInputGuardrail({ ruleset: trapRuleset, logDir });
+    const r = await g.run({ agent: FIX_AGENT, toolCall: FIX_TOOL_CALL });
+
+    assert.equal(r.behavior.type, 'rejectContent');
+    // The agent-visible message is the rejectContent.message.
+    // It MUST NOT contain the raw err.message (path + EACCES).
+    assert.ok(!r.behavior.message.includes(SECRET_PATH),
+      `model-visible message must not leak local path. got: ${r.behavior.message}`);
+    assert.ok(!r.behavior.message.includes('EACCES'),
+      'model-visible message must not leak permission code');
+    // It MUST carry a correlable ref code matching WMA-SHL-<8hex>
+    assert.match(r.behavior.message, /Ref:\s+WMA-SHL-[0-9a-f]{8}/i);
+    assert.match(r.behavior.message, /fail-closed/);
+
+    // outputInfo is application-side metadata (NOT surfaced to model).
+    // It keeps the full err.message + the same ref so the application
+    // can correlate to its own logs.
+    assert.equal(r.outputInfo.wma.errorRef, r.behavior.message.match(/WMA-SHL-[0-9a-f]{8}/i)[0]);
+    assert.ok(r.outputInfo.wma.error.includes(SECRET_PATH),
+      'outputInfo still preserves details for the application');
+  });
+});
+
+test('F-31: fail-open also carries a ref code for correlation', async () => {
+  await withTempLogDir(async (logDir) => {
+    const trapRuleset = {
+      get policies() { throw new Error('boom'); },
+      default: { action: 'allow' },
+    };
+    const g = wmaToolInputGuardrail({ ruleset: trapRuleset, logDir, failOpen: true });
+    const r = await g.run({ agent: FIX_AGENT, toolCall: FIX_TOOL_CALL });
+    assert.equal(r.behavior.type, 'allow');
+    assert.equal(r.outputInfo.wma.failOpenApplied, true);
+    assert.match(r.outputInfo.wma.errorRef, /^WMA-SHL-[0-9a-f]{8}$/);
+  });
+});
+
 test('guardrail: missing ruleset + no path → warning and default-allow', async () => {
   await withTempLogDir(async (logDir) => {
     // Capture stderr to assert the one-time warning fires.
