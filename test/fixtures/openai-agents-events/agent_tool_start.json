@@ -1,0 +1,57 @@
+{
+  "event": "agent_tool_start",
+  "args": [
+    {
+      "context": {},
+      "usage": {
+        "requests": 1,
+        "inputTokens": 661,
+        "outputTokens": 36,
+        "totalTokens": 697,
+        "inputTokensDetails": [{ "cached_tokens": 0 }],
+        "outputTokensDetails": [{ "reasoning_tokens": 0 }],
+        "__type": "Usage"
+      },
+      "__type": "RunContext"
+    },
+    {
+      "type": "function",
+      "name": "analyze_export_file",
+      "description": "Analyse un fichier d'export d'actions",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "path": { "type": "string" }
+        },
+        "required": ["path"],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "strict": true,
+      "invoke": "[function invoke]",
+      "needsApproval": "[function <anon>]",
+      "isEnabled": "[function <anon>]"
+    },
+    {
+      "toolCall": {
+        "type": "function_call",
+        "id": "fc_06367256dc0762c3006a294a71ae6c819d8cb8ab464ca16fd6",
+        "callId": "call_6M6Yae797VWVSeFwyxlyHA6T",
+        "name": "analyze_export_file",
+        "status": "completed",
+        "arguments": "{\"path\":\"/home/runner/work/openai-agent-sdk-test/openai-agent-sdk-test/fixtures/example-export.json\"}",
+        "providerData": {
+          "id": "fc_06367256dc0762c3006a294a71ae6c819d8cb8ab464ca16fd6",
+          "type": "function_call"
+        }
+      }
+    }
+  ],
+  "meta": {
+    "node_version": "v22.22.3",
+    "captured_at": "2026-06-10T11:28:50.208Z",
+    "capture_script": "src/capture-fixtures.ts",
+    "source_repo": "minedorfbm/openai-agent-sdk-test",
+    "sdk_version": "0.2.x"
+  }
+}

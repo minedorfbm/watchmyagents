@@ -94,6 +94,7 @@ For OpenAI agents, the runtime executes **in your process** (not on OpenAI's ser
 npm install watchmyagents @openai/agents zod
 ```
 
+**Pattern A — explicit Runner** (use `attachWmaWatch`) :
 ```typescript
 import { Agent, Runner } from '@openai/agents';
 import {
@@ -117,6 +118,31 @@ attachWmaWatch(runner);                // ← Watch observability
 
 await runner.run(agent, 'How do I reset my password?');
 ```
+
+**Pattern B — convenience `run()` function** (use `attachWmaWatchToAgent`) :
+```typescript
+import { Agent, run } from '@openai/agents';
+import {
+  wmaToolInputGuardrail,
+  attachWmaWatchToAgent,
+} from 'watchmyagents/src/sources/openai-agents-js.js';
+
+const wmaShield = wmaToolInputGuardrail({
+  policiesPath: './examples/policies/mitre-starter.json',
+});
+
+const agent = new Agent({
+  name: 'support_bot',
+  tools: [...],
+  toolInputGuardrails: [wmaShield],
+});
+
+attachWmaWatchToAgent(agent);          // ← Watch attaches to the agent itself
+
+await run(agent, 'How do I reset my password?');
+```
+
+The two patterns reflect the two EventEmitter surfaces the SDK exposes (RunHooks vs AgentHooks). Both produce identical NDJSON output; pick the one that matches your call shape.
 
 That's it. NDJSON lands in `./watchmyagents-logs/openai-agents/`. The MITRE starter bundle catches common attack patterns (T1567 exfil, T1485 destructive shell, T1548 priv-esc, …) on Day 0 — all in `mode: 'shadow'` so the first run only LOGS without enforcing. Promote to `enforce` once you've calibrated.
 

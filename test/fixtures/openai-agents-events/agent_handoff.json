@@ -1,0 +1,42 @@
+{
+  "event": "agent_handoff",
+  "args": [
+    {
+      "context": {},
+      "usage": {
+        "requests": 1,
+        "inputTokens": 157,
+        "outputTokens": 67,
+        "totalTokens": 224,
+        "inputTokensDetails": [{ "cached_tokens": 0 }],
+        "outputTokensDetails": [{ "reasoning_tokens": 0 }],
+        "__type": "Usage"
+      },
+      "__type": "RunContext"
+    },
+    {
+      "eventEmitter": { "__type": "EventEmitter" },
+      "name": "fixture_capture_escalation",
+      "instructions": "Tu confirmes la prise en charge en français : « Escalade reçue, je traite. »",
+      "handoffDescription": "",
+      "handoffs": [],
+      "model": "",
+      "modelSettings": {},
+      "tools": [],
+      "mcpServers": [],
+      "inputGuardrails": [],
+      "outputGuardrails": [],
+      "outputType": "text",
+      "toolUseBehavior": "run_llm_again",
+      "resetToolChoice": true,
+      "__type": "Agent"
+    }
+  ],
+  "meta": {
+    "node_version": "v22.22.3",
+    "captured_at": "2026-06-10T11:29:00.347Z",
+    "capture_script": "src/capture-fixtures.ts",
+    "source_repo": "minedorfbm/openai-agent-sdk-test",
+    "sdk_version": "0.2.x"
+  }
+}

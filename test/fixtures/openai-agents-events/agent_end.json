@@ -1,0 +1,32 @@
+{
+  "event": "agent_end",
+  "args": [
+    {
+      "context": {},
+      "usage": {
+        "requests": 2,
+        "inputTokens": 2172,
+        "outputTokens": 907,
+        "totalTokens": 3079,
+        "inputTokensDetails": [
+          { "cached_tokens": 0 },
+          { "cached_tokens": 0 }
+        ],
+        "outputTokensDetails": [
+          { "reasoning_tokens": 0 },
+          { "reasoning_tokens": 0 }
+        ],
+        "__type": "Usage"
+      },
+      "__type": "RunContext"
+    },
+    "# Rapport Guardian — Analyse des actions\n\n**Résumé de l'export analysé**\n\n- Nombre d'évènements analysés : 3\n- Nombre total de findings : 2\n   - Sévérité Critique : 1\n   - Sévérité Moyenne : 1"
+  ],
+  "meta": {
+    "node_version": "v22.22.3",
+    "captured_at": "2026-06-10T11:28:58.342Z",
+    "capture_script": "src/capture-fixtures.ts",
+    "source_repo": "minedorfbm/openai-agent-sdk-test",
+    "sdk_version": "0.2.x"
+  }
+}

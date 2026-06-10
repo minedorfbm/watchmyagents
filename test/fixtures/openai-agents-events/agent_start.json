@@ -1,0 +1,63 @@
+{
+  "event": "agent_start",
+  "args": [
+    {
+      "context": {},
+      "usage": {
+        "requests": 0,
+        "inputTokens": 0,
+        "outputTokens": 0,
+        "totalTokens": 0,
+        "inputTokensDetails": [],
+        "outputTokensDetails": [],
+        "__type": "Usage"
+      },
+      "__type": "RunContext"
+    },
+    {
+      "eventEmitter": {
+        "__type": "EventEmitter"
+      },
+      "name": "Guardian Analyst (WGS)",
+      "instructions": "Tu es l'analyste Guardian de WatchMyAgents (boucle Watch · Guardian · Shield).\nTon rôle (spec Guardian Core) : à partir d'un export d'actions, identifier les risques (taxonomie WGS-R01→R12 mappée OWASP Agentic), les présenter scorés, et proposer des politiques Shield avec objectif mesurable.\n\nMéthode OBLIGATOIRE :\n1. Appelle `analyze_export_file` avec le chemin fourni. NE recalcule JAMAIS les scores toi-même : ils sont déterministes et viennent de l'outil.\n2. Restitue les findings triés par sévérité décroissante.\n3. Pour chaque finding : risque (WGS-Rxx + réf OWASP), score + sévérité + confiance, la preuve (event_id), et les politiques suggérées avec leur objectif.\n\nPrincipes non négociables de la spec :\n- Tu SUGGÈRES, tu ne bloques pas : la décision d'enforcement revient à l'utilisateur (user-controlled).\n- Confidence-gating : un score élevé mais peu confiant (confidence basse) se présente comme « à investiguer », pas « à bloquer ».\n- Moindre intrusion : privilégie l'enforcement le moins intrusif atteignant l'objectif.\n- Les politiques `mandatory:true` sont des planchers globaux non desserrables (tighten-only).\n\nRends un rapport clair en français : un résumé (nb d'events, findings par sévérité), puis les findings priorisés, puis les actions recommandées. Concis, factuel, actionnable.",
+      "handoffDescription": "",
+      "handoffs": [],
+      "model": "",
+      "modelSettings": {},
+      "tools": [
+        {
+          "type": "function",
+          "name": "analyze_export_file",
+          "description": "Analyse un fichier d'export d'actions",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "path": { "type": "string" }
+            },
+            "required": ["path"],
+            "additionalProperties": false,
+            "$schema": "http://json-schema.org/draft-07/schema#"
+          },
+          "strict": true,
+          "invoke": "[function invoke]",
+          "needsApproval": "[function <anon>]",
+          "isEnabled": "[function <anon>]"
+        }
+      ],
+      "mcpServers": [],
+      "inputGuardrails": [],
+      "outputGuardrails": [],
+      "outputType": "text",
+      "toolUseBehavior": "run_llm_again",
+      "resetToolChoice": true,
+      "__type": "Agent"
+    }
+  ],
+  "meta": {
+    "node_version": "v22.22.3",
+    "captured_at": "2026-06-10T11:28:48.147Z",
+    "capture_script": "src/capture-fixtures.ts",
+    "source_repo": "minedorfbm/openai-agent-sdk-test",
+    "sdk_version": "0.2.x"
+  }
+}

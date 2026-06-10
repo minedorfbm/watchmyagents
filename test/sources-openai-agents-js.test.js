@@ -24,6 +24,7 @@ import { EventEmitter } from 'node:events';
 import {
   wmaToolInputGuardrail,
   attachWmaWatch,
+  attachWmaWatchToAgent,
   normalizeAgentStart,
   normalizeAgentEnd,
   normalizeAgentHandoff,
@@ -537,4 +538,310 @@ test('adapterMeta: provider + capabilities are frozen', () => {
   assert.equal(adapterMeta.capabilities.teamIdAutoDetect, true);
   // Object.isFrozen check
   assert.throws(() => { adapterMeta.displayName = 'mutated'; }, TypeError);
+});
+
+// ── AgentHooks pattern (attachWmaWatchToAgent) ─────────────────────────
+//
+// When the customer uses the convenience `run(agent, ...)` function from
+// @openai/agents (vs. an explicit `new Runner()`), events fire via the
+// AgentHooks EventEmitter on the agent itself, with DIFFERENT signatures
+// for agent_end / agent_handoff / agent_tool_start / agent_tool_end
+// (the agent is implicit — it's the one we registered on). See the
+// inline doc above `attachWmaWatchToAgent` in src/sources/openai-agents-js.js.
+
+test('attachWmaWatchToAgent: throws when agent lacks .on()', () => {
+  assert.throws(() => attachWmaWatchToAgent({}), /\.on\(/);
+  assert.throws(() => attachWmaWatchToAgent(null), /\.on\(/);
+});
+
+test('attachWmaWatchToAgent: registers listeners for all 5 lifecycle events', () => {
+  const ee = new EventEmitter();
+  ee.name = 'guardian_bot';
+  attachWmaWatchToAgent(ee, { logDir: '/tmp/wma-test-noop' });
+  assert.equal(ee.listenerCount('agent_start'), 1);
+  assert.equal(ee.listenerCount('agent_end'), 1);
+  assert.equal(ee.listenerCount('agent_handoff'), 1);
+  assert.equal(ee.listenerCount('agent_tool_start'), 1);
+  assert.equal(ee.listenerCount('agent_tool_end'), 1);
+});
+
+test('attachWmaWatchToAgent: detach() removes all 5 listeners', () => {
+  const ee = new EventEmitter();
+  ee.name = 'guardian_bot';
+  const detach = attachWmaWatchToAgent(ee, { logDir: '/tmp/wma-test-noop' });
+  detach();
+  assert.equal(ee.listenerCount('agent_start'), 0);
+  assert.equal(ee.listenerCount('agent_end'), 0);
+  assert.equal(ee.listenerCount('agent_handoff'), 0);
+  assert.equal(ee.listenerCount('agent_tool_start'), 0);
+  assert.equal(ee.listenerCount('agent_tool_end'), 0);
+});
+
+test('attachWmaWatchToAgent: agent_end fires with 2 args (no agent in args) and still logs', async () => {
+  await withTempLogDir(async (logDir) => {
+    // The closure-captured agent provides agent_id when the args don't.
+    const ee = new EventEmitter();
+    ee.name = 'guardian_bot';
+    attachWmaWatchToAgent(ee, { logDir, sessionId: 'sess-ah-end' });
+
+    // AgentHooks signature: (context, output) — only 2 args, NO agent.
+    ee.emit('agent_end', /* ctx */ {}, 'final answer text');
+
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setTimeout(r, 50));
+
+    const day = new Date().toISOString().slice(0, 10);
+    const path = join(logDir, 'openai-agents', `${day}.ndjson`);
+    const text = await readFile(path, 'utf8');
+    const lines = text.trim().split('\n').map((l) => JSON.parse(l));
+    const endRow = lines.find((l) => l.output?.kind === 'agent_end');
+    assert.ok(endRow, 'agent_end must reach NDJSON');
+    assert.equal(endRow.agent_id, 'guardian_bot', 'agent_id must come from closure-captured agent');
+    assert.equal(endRow.output.text, 'final answer text');
+  });
+});
+
+test('attachWmaWatchToAgent: agent_handoff fires with (ctx, toAgent) and uses closure agent as fromAgent', async () => {
+  await withTempLogDir(async (logDir) => {
+    const ee = new EventEmitter();
+    ee.name = 'triage_bot';
+    attachWmaWatchToAgent(ee, { logDir, sessionId: 'sess-ah-handoff' });
+
+    // AgentHooks signature: (context, toAgent) — NO fromAgent in args.
+    const toAgent = { name: 'escalation_bot', model: 'gpt-5' };
+    ee.emit('agent_handoff', /* ctx */ {}, toAgent);
+
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setTimeout(r, 50));
+
+    const day = new Date().toISOString().slice(0, 10);
+    const path = join(logDir, 'openai-agents', `${day}.ndjson`);
+    const text = await readFile(path, 'utf8');
+    const lines = text.trim().split('\n').map((l) => JSON.parse(l));
+    const handoffRow = lines.find((l) => l.action_type === ACTION_TYPES.HANDOFF);
+    assert.ok(handoffRow, 'handoff must reach NDJSON');
+    // fromAgent = the closure-captured agent (triage_bot)
+    assert.equal(handoffRow.parent_agent_id, 'triage_bot');
+    // toAgent = the one passed in args
+    assert.equal(handoffRow.agent_id, 'escalation_bot');
+    assert.equal(handoffRow.output.from, 'triage_bot');
+    assert.equal(handoffRow.output.to, 'escalation_bot');
+  });
+});
+
+test('attachWmaWatchToAgent: agent_tool_start fires with (ctx, tool, details) and uses closure agent', async () => {
+  await withTempLogDir(async (logDir) => {
+    const ee = new EventEmitter();
+    ee.name = 'guardian_bot';
+    attachWmaWatchToAgent(ee, { logDir, sessionId: 'sess-ah-tool' });
+
+    // AgentHooks signature: (context, tool, details) — NO agent in args.
+    const tool = { name: 'analyze_export_file' };
+    const toolCall = {
+      id: 'fc_abc',
+      callId: 'call_xyz',
+      name: 'analyze_export_file',
+      arguments: '{"path":"/tmp/export.json"}',
+    };
+    ee.emit('agent_tool_start', /* ctx */ {}, tool, { toolCall });
+
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setTimeout(r, 50));
+
+    const day = new Date().toISOString().slice(0, 10);
+    const path = join(logDir, 'openai-agents', `${day}.ndjson`);
+    const text = await readFile(path, 'utf8');
+    const lines = text.trim().split('\n').map((l) => JSON.parse(l));
+    const toolRow = lines.find((l) => l.action_type === ACTION_TYPES.CUSTOM_TOOL_USE);
+    assert.ok(toolRow);
+    assert.equal(toolRow.agent_id, 'guardian_bot', 'agent_id must come from closure');
+    assert.equal(toolRow.tool_name, 'analyze_export_file');
+    assert.deepEqual(toolRow.input, { path: '/tmp/export.json' });
+  });
+});
+
+test('attachWmaWatchToAgent: agent_tool_end fires with (ctx, tool, result, details)', async () => {
+  await withTempLogDir(async (logDir) => {
+    const ee = new EventEmitter();
+    ee.name = 'guardian_bot';
+    attachWmaWatchToAgent(ee, { logDir, sessionId: 'sess-ah-tend' });
+
+    const tool = { name: 'analyze_export_file' };
+    const toolCall = { id: 'fc_abc', callId: 'call_xyz', name: 'analyze_export_file', arguments: '{}' };
+    // AgentHooks signature: (context, tool, result, details) — 4 args, NO agent.
+    ee.emit('agent_tool_end', /* ctx */ {}, tool, '{"findings":2}', { toolCall });
+
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setTimeout(r, 50));
+
+    const day = new Date().toISOString().slice(0, 10);
+    const path = join(logDir, 'openai-agents', `${day}.ndjson`);
+    const text = await readFile(path, 'utf8');
+    const lines = text.trim().split('\n').map((l) => JSON.parse(l));
+    const endRow = lines.find((l) => l.action_type === ACTION_TYPES.CUSTOM_TOOL_RESULT);
+    assert.ok(endRow);
+    assert.equal(endRow.agent_id, 'guardian_bot');
+    assert.equal(endRow.output.text, '{"findings":2}');
+  });
+});
+
+// ── Real fixtures: verify our normalizers handle the actual SDK shapes ─
+//
+// These fixtures were captured 2026-06-10 from a live @openai/agents
+// ^0.2.0 run via the capture-fixtures.ts script in the sister test repo
+// minedorfbm/openai-agent-sdk-test. They lock the contract between our
+// normalizers and the SDK's actual runtime output.
+
+const realFixturesDir = join(import.meta.dirname, 'fixtures', 'openai-agents-events');
+
+async function loadFixture(name) {
+  const text = await readFile(join(realFixturesDir, `${name}.json`), 'utf8');
+  return JSON.parse(text);
+}
+
+test('real fixtures: agent_start args[1] is the agent — normalizer extracts name + tools', async () => {
+  const fix = await loadFixture('agent_start');
+  // AgentHooks signature: args = [context, agent, turnInput?]
+  const [, agent] = fix.args;
+  const evt = normalizeAgentStart({
+    agent,
+    turnInput: undefined,
+    sessionId: 'sess-real',
+    teamId: 'team-real',
+  });
+  assert.equal(evt.agent_id, 'Guardian Analyst (WGS)');
+  assert.equal(evt.agent_name, 'Guardian Analyst (WGS)');
+  assert.equal(evt.team_id, 'team-real');
+  assert.equal(validateWMAAction(evt).valid, true);
+});
+
+test('real fixtures: agent_end args[1] is the output string (AgentHooks omits agent)', async () => {
+  const fix = await loadFixture('agent_end');
+  // AgentHooks: args = [context, output] — no agent
+  const [, output] = fix.args;
+  assert.equal(typeof output, 'string');
+  assert.ok(output.startsWith('# Rapport Guardian'), 'real output is markdown');
+
+  // Closure-captured agent supplies agent_id
+  const closureAgent = { name: 'Guardian Analyst (WGS)' };
+  const evt = normalizeAgentEnd({
+    agent: closureAgent,
+    output,
+    sessionId: 'sess-real',
+    teamId: 'team-real',
+  });
+  assert.equal(evt.agent_id, 'Guardian Analyst (WGS)');
+  assert.equal(evt.output.kind, 'agent_end');
+  assert.equal(evt.output.text, output);
+});
+
+test('real fixtures: agent_handoff args[1] is the toAgent (AgentHooks omits fromAgent)', async () => {
+  const fix = await loadFixture('agent_handoff');
+  // AgentHooks: args = [context, nextAgent] — only the "to" side
+  const [, toAgent] = fix.args;
+  assert.equal(toAgent.name, 'fixture_capture_escalation');
+
+  // The fromAgent is the closure-captured one (triage_bot in real run)
+  const fromAgent = { name: 'fixture_capture_triage', model: 'gpt-5' };
+  const evt = normalizeAgentHandoff({
+    fromAgent,
+    toAgent,
+    sessionId: 'sess-real',
+    teamId: 'team-real',
+  });
+  assert.equal(evt.action_type, ACTION_TYPES.HANDOFF);
+  assert.equal(evt.parent_agent_id, 'fixture_capture_triage');
+  assert.equal(evt.agent_id, 'fixture_capture_escalation');
+});
+
+test('real fixtures: agent_tool_start args[1] is the tool object, args[2] is details.toolCall', async () => {
+  const fix = await loadFixture('agent_tool_start');
+  // AgentHooks: args = [context, tool, details] — no agent
+  const [, tool, details] = fix.args;
+  assert.equal(tool.name, 'analyze_export_file');
+  assert.ok(details.toolCall);
+  // Real SDK uses callId AND id (separate fields)
+  assert.equal(details.toolCall.callId, 'call_6M6Yae797VWVSeFwyxlyHA6T');
+  assert.equal(details.toolCall.name, 'analyze_export_file');
+  assert.equal(typeof details.toolCall.arguments, 'string'); // SDK serializes as JSON string
+
+  const closureAgent = { name: 'Guardian Analyst (WGS)' };
+  const evt = normalizeToolStart({
+    agent: closureAgent,
+    tool,
+    toolCall: details.toolCall,
+    sessionId: 'sess-real',
+    teamId: 'team-real',
+  });
+  assert.equal(evt.tool_name, 'analyze_export_file');
+  assert.equal(evt.agent_id, 'Guardian Analyst (WGS)');
+  // Our normalizer parses the JSON-string arguments into an object
+  assert.deepEqual(evt.input, {
+    path: '/home/runner/work/openai-agent-sdk-test/openai-agent-sdk-test/fixtures/example-export.json',
+  });
+});
+
+test('real fixtures: agent_tool_end args[1]=tool, args[2]=result string, args[3]=details.toolCall', async () => {
+  const fix = await loadFixture('agent_tool_end');
+  // AgentHooks: args = [context, tool, result, details] — no agent
+  const [, tool, result, details] = fix.args;
+  assert.equal(tool.name, 'analyze_export_file');
+  assert.equal(typeof result, 'string');
+  // The tool returns JSON-serialized findings — confirm it parses
+  const parsed = JSON.parse(result);
+  assert.ok(parsed.summary);
+  assert.ok(details.toolCall);
+
+  const closureAgent = { name: 'Guardian Analyst (WGS)' };
+  const evt = normalizeToolEnd({
+    agent: closureAgent,
+    tool,
+    result,
+    toolCall: details.toolCall,
+    sessionId: 'sess-real',
+    teamId: 'team-real',
+  });
+  assert.equal(evt.tool_name, 'analyze_export_file');
+  // Normalizer wraps string results in {text}
+  assert.equal(evt.output.text, result);
+});
+
+test('real fixtures: end-to-end emit of all 5 events on an EventEmitter mirrors AgentHooks', async () => {
+  await withTempLogDir(async (logDir) => {
+    const fixStart = await loadFixture('agent_start');
+    const fixEnd = await loadFixture('agent_end');
+    const fixToolStart = await loadFixture('agent_tool_start');
+    const fixToolEnd = await loadFixture('agent_tool_end');
+    const fixHandoff = await loadFixture('agent_handoff');
+
+    const ee = new EventEmitter();
+    ee.name = 'Guardian Analyst (WGS)';
+    attachWmaWatchToAgent(ee, { logDir, sessionId: 'sess-real-e2e' });
+
+    // Replay the captures with their EXACT argument layouts
+    ee.emit('agent_start', ...fixStart.args);
+    ee.emit('agent_tool_start', ...fixToolStart.args);
+    ee.emit('agent_tool_end', ...fixToolEnd.args);
+    ee.emit('agent_handoff', ...fixHandoff.args);
+    ee.emit('agent_end', ...fixEnd.args);
+
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setTimeout(r, 100));
+
+    const day = new Date().toISOString().slice(0, 10);
+    const path = join(logDir, 'openai-agents', `${day}.ndjson`);
+    const text = await readFile(path, 'utf8');
+    const lines = text.trim().split('\n').map((l) => JSON.parse(l));
+
+    // All 5 distinct action_types should be represented
+    const seenTypes = new Set(lines.map((l) => l.action_type));
+    assert.ok(seenTypes.has(ACTION_TYPES.MESSAGE), 'agent_start + agent_end → MESSAGE');
+    assert.ok(seenTypes.has(ACTION_TYPES.HANDOFF), 'agent_handoff → HANDOFF');
+    assert.ok(seenTypes.has(ACTION_TYPES.CUSTOM_TOOL_USE), 'agent_tool_start');
+    assert.ok(seenTypes.has(ACTION_TYPES.CUSTOM_TOOL_RESULT), 'agent_tool_end');
+
+    // Single team_id across the run
+    const teamIds = new Set(lines.map((l) => l.team_id).filter(Boolean));
+    assert.equal(teamIds.size, 1, 'single team_id across the simulated run');
+  });
 });

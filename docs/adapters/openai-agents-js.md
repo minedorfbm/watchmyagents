@@ -36,7 +36,12 @@ WMA_TEAM_ID=customer-support              # optional; manual team tagging
 
 Today the adapter loads policies from a local file via `policiesPath`. Fortress-pulled policies for this adapter land in a 1.3.x patch.
 
-### 4. Wire it up — the two lines
+### 4. Wire it up — two patterns
+
+The `@openai/agents` SDK exposes two EventEmitter surfaces and lets you
+pick how to run an agent. WMA supports both:
+
+**Pattern A — explicit Runner (RunHooks):**
 
 ```typescript
 import { Agent, Runner } from '@openai/agents';
@@ -57,10 +62,43 @@ const agent = new Agent({
 });
 
 const runner = new Runner();
-attachWmaWatch(runner);                       // ← Watch observability
+attachWmaWatch(runner);                       // ← Watch via RunHooks
 
 await runner.run(agent, 'How do I reset my password?');
 ```
+
+**Pattern B — convenience `run()` function (AgentHooks):**
+
+```typescript
+import { Agent, run } from '@openai/agents';
+import {
+  wmaToolInputGuardrail,
+  attachWmaWatchToAgent,
+} from 'watchmyagents/src/sources/openai-agents-js.js';
+
+const wmaShield = wmaToolInputGuardrail({
+  policiesPath: './examples/policies/mitre-starter.json',
+});
+
+const agent = new Agent({
+  name: 'support_bot',
+  tools: [...],
+  toolInputGuardrails: [wmaShield],          // ← Shield (unchanged)
+});
+
+attachWmaWatchToAgent(agent);                 // ← Watch via AgentHooks
+
+await run(agent, 'How do I reset my password?');
+```
+
+**Which to pick?** Use the function name (`Runner` vs `run`) as your
+heuristic. They behave identically from a Watch/Shield perspective —
+same NDJSON output, same audit chain, same team_id propagation. Under
+the hood, the SDK fires lifecycle events through two different event
+emitters with slightly different argument layouts (e.g. AgentHooks
+omits the agent from `agent_end` / `agent_tool_*` because the listener
+is registered on the agent itself); the two `attachWma…` variants
+handle those differences.
 
 That is the entire customer change.
 

@@ -82,7 +82,15 @@ export class Logger {
     const path = this._pathForToday();
     const full = {
       id: e.id || randomUUID(),
-      agent_id: this.agentId,
+      // v1.3.0 — prefer the event's agent_id when present so multi-agent
+      // adapters (OpenAI Agents SDK handoffs, future LangGraph subgraphs)
+      // can attribute each event to its actual emitter. Falls back to
+      // the Logger's constructor agentId for single-agent adapters
+      // (Anthropic Managed) where every event from this logger belongs
+      // to the same agent. Backwards compatible: existing Anthropic
+      // adapter doesn't populate e.agent_id on every yield, so the
+      // fallback path keeps its behavior intact.
+      agent_id: e.agent_id || this.agentId,
       // PR-C: sub-agent fields. Defaults are honest for solo / root agents.
       // An adapter that detects hierarchy (e.g. OpenAI Agents handoffs)
       // populates these on the event, and the Logger threads them through.

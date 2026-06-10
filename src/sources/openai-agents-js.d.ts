@@ -142,6 +142,14 @@ export interface WMARunnerLike {
   off?(event: string, listener: (...args: any[]) => void): unknown;
 }
 
+/** Minimal Agent surface — same shape as Runner from an EventEmitter
+ * perspective. The methods are identical; the difference is the listener
+ * signatures (see attachWmaWatchToAgent). */
+export interface WMAAgentLike {
+  on(event: string, listener: (...args: any[]) => void): unknown;
+  off?(event: string, listener: (...args: any[]) => void): unknown;
+}
+
 /** Options for {@link attachWmaWatch}. */
 export interface WMAWatchOptions {
   logDir?: string;
@@ -154,7 +162,7 @@ export interface WMAWatchOptions {
  * Attach WMA Watch listeners to an @openai/agents Runner. Returns a
  * detach function the customer can call on shutdown.
  *
- * Usage:
+ * USE THIS when the customer creates a Runner explicitly:
  * ```typescript
  * import { Runner } from '@openai/agents';
  * import { attachWmaWatch } from 'watchmyagents';
@@ -166,9 +174,39 @@ export interface WMAWatchOptions {
  *
  * detach();  // optional, on process shutdown
  * ```
+ *
+ * If the customer uses the convenience `run(agent, ...)` function
+ * (no explicit Runner), use {@link attachWmaWatchToAgent} instead.
  */
 export function attachWmaWatch(
   runner: WMARunnerLike,
+  options?: WMAWatchOptions,
+): () => void;
+
+/**
+ * Attach WMA Watch listeners to an @openai/agents Agent (AgentHooks
+ * pattern). Use this when the customer uses the convenience
+ * `run(agent, ...)` function rather than creating an explicit Runner.
+ *
+ * The AgentHooks event signatures differ slightly from RunHooks:
+ * agent_end, agent_handoff, agent_tool_start, agent_tool_end do NOT
+ * pass the agent in their args — it's captured via closure here.
+ *
+ * Usage:
+ * ```typescript
+ * import { Agent, run } from '@openai/agents';
+ * import { attachWmaWatchToAgent } from 'watchmyagents';
+ *
+ * const myAgent = new Agent({ name: 'support_bot', tools: [...] });
+ * const detach = attachWmaWatchToAgent(myAgent);
+ *
+ * await run(myAgent, 'help me reset my password');
+ *
+ * detach();  // optional, on process shutdown
+ * ```
+ */
+export function attachWmaWatchToAgent(
+  agent: WMAAgentLike,
   options?: WMAWatchOptions,
 ): () => void;
 

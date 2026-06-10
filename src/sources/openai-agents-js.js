@@ -579,6 +579,128 @@ export function attachWmaWatch(runner, options = {}) {
   };
 }
 
+// ── Public API: Watch via AgentHooks (when customer uses run() helper) ─
+//
+// The @openai/agents SDK exposes TWO event-emitter surfaces:
+//   - RunHooks  : `runner.on(event, listener)` — fires when customer
+//                 explicitly creates a Runner via `new Runner()`.
+//                 Listener args INCLUDE the agent.
+//   - AgentHooks: `agent.on(event, listener)`  — fires when customer
+//                 uses the convenience `run(agent, ...)` function
+//                 (without an explicit Runner). The agent is implicit
+//                 (it's the one we registered listeners on), so the
+//                 listener args do NOT include it (except agent_start).
+//
+// Real-world capture (June 2026) shows AgentHooks signatures:
+//   agent_start      [context, agent, turnInput?]
+//   agent_end        [context, output]            ← no agent
+//   agent_handoff    [context, toAgent]           ← only the "to" side
+//   agent_tool_start [context, tool, details]    ← no agent
+//   agent_tool_end   [context, tool, result, details] ← no agent
+//
+// `attachWmaWatchToAgent(agent, options)` mirrors `attachWmaWatch`
+// for the AgentHooks pattern. The agent is captured via closure so
+// our normalizers still receive an agent_id even for events that
+// don't pass the agent in their args.
+//
+// Returns a `detach()` function symmetric to attachWmaWatch.
+
+export function attachWmaWatchToAgent(agent, options = {}) {
+  if (!agent || typeof agent.on !== 'function') {
+    throw new TypeError(
+      'attachWmaWatchToAgent: agent must expose an .on(event, listener) method ' +
+      '(the @openai/agents Agent EventEmitter, or a compatible shim).',
+    );
+  }
+
+  const sessionId = options.sessionId || makeSessionId();
+  const logDir = options.logDir
+    || readEnv('WMA_LOG_DIR', './watchmyagents-logs');
+  const logger = options.logger
+    || new Logger({ logDir, agentId: 'openai-agents', sessionId, silent: true, bestEffort: true });
+
+  const envTeamId = teamIdFromEnv();
+  const teamTracker = options.teamTracker || createTeamTracker(envTeamId);
+
+  // Same try/catch wrapping discipline as attachWmaWatch: Watch must
+  // NEVER throw inside the customer's agent loop. Handlers below absorb
+  // exceptions and write them to stderr instead of propagating.
+  const handlers = {
+    agent_start: async (context, eventAgent, turnInput) => {
+      try {
+        const teamId = teamTracker.bootstrap(sessionId);
+        const event = normalizeAgentStart({
+          agent: eventAgent || agent,
+          turnInput, sessionId, teamId,
+        });
+        await logger.write(event);
+      } catch (e) {
+        process.stderr.write(`[wma/openai-agents] watch agent_start error: ${e.message}\n`);
+      }
+    },
+    // AgentHooks agent_end does NOT pass the agent — captured via closure.
+    agent_end: async (context, output) => {
+      try {
+        const teamId = teamTracker.resolve(sessionId);
+        const event = normalizeAgentEnd({ agent, output, sessionId, teamId });
+        await logger.write(event);
+      } catch (e) {
+        process.stderr.write(`[wma/openai-agents] watch agent_end error: ${e.message}\n`);
+      }
+    },
+    // AgentHooks agent_handoff passes only the "to" agent. The "from"
+    // is the agent we registered on (this listener is fired right
+    // before control passes away from it).
+    agent_handoff: async (context, toAgent) => {
+      try {
+        const teamId = teamTracker.recordHandoff(agent, toAgent, sessionId)
+          || teamTracker.bootstrap(sessionId);
+        const event = normalizeAgentHandoff({
+          fromAgent: agent, toAgent, sessionId, teamId,
+        });
+        await logger.write(event);
+      } catch (e) {
+        process.stderr.write(`[wma/openai-agents] watch agent_handoff error: ${e.message}\n`);
+      }
+    },
+    // AgentHooks tool events do NOT pass the agent — captured via closure.
+    agent_tool_start: async (context, tool, details) => {
+      try {
+        const teamId = teamTracker.resolve(sessionId) || teamTracker.bootstrap(sessionId);
+        const event = normalizeToolStart({
+          agent, tool, toolCall: details?.toolCall, sessionId, teamId,
+        });
+        await logger.write(event);
+      } catch (e) {
+        process.stderr.write(`[wma/openai-agents] watch agent_tool_start error: ${e.message}\n`);
+      }
+    },
+    agent_tool_end: async (context, tool, result, details) => {
+      try {
+        const teamId = teamTracker.resolve(sessionId) || teamTracker.bootstrap(sessionId);
+        const event = normalizeToolEnd({
+          agent, tool, result, toolCall: details?.toolCall, sessionId, teamId,
+        });
+        await logger.write(event);
+      } catch (e) {
+        process.stderr.write(`[wma/openai-agents] watch agent_tool_end error: ${e.message}\n`);
+      }
+    },
+  };
+
+  for (const [evt, fn] of Object.entries(handlers)) {
+    agent.on(evt, fn);
+  }
+
+  return function detachWmaWatchFromAgent() {
+    if (typeof agent.off !== 'function') return;
+    for (const [evt, fn] of Object.entries(handlers)) {
+      try { agent.off(evt, fn); }
+      catch { /* listener wasn't attached or off() not supported */ }
+    }
+  };
+}
+
 // ── Enforcement metadata (for adapter registry / introspection) ───────
 
 export const adapterMeta = Object.freeze({

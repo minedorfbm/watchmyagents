@@ -44,7 +44,7 @@
   "dependencies": {},
   "devDependencies": {},
   "peerDependencies": {
-    "@openai/agents": "^0.1.0"
+    "@openai/agents": "^0.2.0"
   },
   "peerDependenciesMeta": {
     "@openai/agents": {
