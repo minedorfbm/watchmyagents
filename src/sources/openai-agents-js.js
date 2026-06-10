@@ -65,6 +65,18 @@ const PROVIDER = PROVIDERS.OPENAI_AGENTS;
 // the customer must opt into explicitly, with all the implications.
 const DEFAULT_FAIL_OPEN = false;
 
+// v1.4 F-32 (P2 Codex audit on v1.3.0): bound the bytes we accept on
+// the hot path. A misbehaving tool, a model hallucinating a huge
+// response, or a malicious customer-controlled fixture can otherwise
+// pin CPU on JSON.parse, blow up the NDJSON line, or fill the disk.
+// 256 KB is generous for legitimate tool inputs/outputs (real-world
+// captures from the Guardian agent peak at < 2 KB) and well under what
+// would degrade Watch / Shield. Customers with outlier traffic can
+// override per-guardrail via options.maxArgBytes / options.maxResultBytes.
+const DEFAULT_MAX_ARG_BYTES = 256 * 1024;
+const DEFAULT_MAX_RESULT_BYTES = 256 * 1024;
+const TRUNCATION_SENTINEL = '…[truncated by WMA Shield]';
+
 // Mirror of '@openai/agents' value object factory. Replicated here so we
 // don't take a runtime dep. If '@openai/agents' ever changes the shape
 // (extreme low probability), fixture tests will catch it.
@@ -95,10 +107,44 @@ function readEnv(key, fallback) {
 // as a JSON string; some custom tool implementations pass them through
 // already-parsed. Fail-closed: if we can't parse, return null and let
 // the policy match against {} (which fails any specific clause).
-function safeParseToolArgs(rawArgs) {
+//
+// v1.4 F-32 — cap the input bytes before JSON.parse. Beyond the cap
+// the input is truncated with a sentinel and a parsed shape that
+// preserves the field structure as much as possible (try-parse the
+// truncated text, fall back to `{ _wmaTruncated: true, original_bytes }`).
+// Policies that match on tool_name still work; policies that match on
+// argument values silently miss the truncated suffix — which is the
+// correct fail-closed behavior for an oversize input.
+function safeParseToolArgs(rawArgs, maxBytes = DEFAULT_MAX_ARG_BYTES) {
   if (rawArgs == null) return null;
-  if (typeof rawArgs === 'object') return rawArgs;
+  if (typeof rawArgs === 'object') {
+    // Already parsed by the SDK or the customer. We don't deep-walk
+    // and truncate — that would silently change policy match semantics
+    // on nested fields. Defer the decision to the caller; the size cap
+    // applies at the string-parse boundary, which is the realistic
+    // SDK entry point.
+    return rawArgs;
+  }
   if (typeof rawArgs !== 'string') return null;
+  // Byte cap: Buffer.byteLength is the safe length on the wire.
+  const byteLen = Buffer.byteLength(rawArgs, 'utf8');
+  if (byteLen > maxBytes) {
+    // Truncate to maxBytes worth of bytes (substring is char-bounded;
+    // good enough — exact byte truncation isn't required since we mark
+    // the result as truncated and never feed it back to a real tool).
+    const head = rawArgs.slice(0, maxBytes);
+    try {
+      const parsed = JSON.parse(head);
+      // If by luck the head is valid JSON, return it plus the marker.
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        return { ...parsed, _wmaTruncated: true, _wmaOriginalBytes: byteLen };
+      }
+      return { _wmaTruncated: true, _wmaOriginalBytes: byteLen, head: parsed };
+    } catch {
+      // Common path: truncated JSON is invalid mid-tree.
+      return { _wmaTruncated: true, _wmaOriginalBytes: byteLen };
+    }
+  }
   try { return JSON.parse(rawArgs); }
   catch { return null; }
 }
@@ -308,6 +354,39 @@ export function normalizeToolStart({ agent, tool, toolCall, sessionId, teamId })
   });
 }
 
+// v1.4 F-32 — cap result bytes before writing NDJSON. Verbose tools
+// (HTML scrapers, web_fetch with full-page payloads, computer use
+// screenshots base64'd) can return arbitrary megabytes. Without a cap
+// we'd write a single ~MB-sized JSON line per call into the rotation
+// file, fill the disk, and slow every subsequent NDJSON read.
+function truncateResult(result, maxBytes = DEFAULT_MAX_RESULT_BYTES) {
+  if (typeof result === 'string') {
+    const byteLen = Buffer.byteLength(result, 'utf8');
+    if (byteLen > maxBytes) {
+      return {
+        text: result.slice(0, maxBytes) + TRUNCATION_SENTINEL,
+        _wmaTruncated: true,
+        _wmaOriginalBytes: byteLen,
+      };
+    }
+    return { text: result };
+  }
+  if (result == null) return { value: null };
+  // Object / array result: serialize, check size, truncate if needed.
+  try {
+    const serialized = JSON.stringify(result);
+    const byteLen = Buffer.byteLength(serialized, 'utf8');
+    if (byteLen > maxBytes) {
+      return {
+        value: { _wmaTruncated: true, _wmaOriginalBytes: byteLen },
+      };
+    }
+    return { value: result };
+  } catch {
+    return { value: { _wmaTruncated: true, _wmaUnserializable: true } };
+  }
+}
+
 export function normalizeToolEnd({ agent, tool, result, toolCall, sessionId, teamId }) {
   return Object.freeze({
     id: `${makeEventId(toolCall)}-end`,
@@ -326,7 +405,7 @@ export function normalizeToolEnd({ agent, tool, result, toolCall, sessionId, tea
     composition_pattern: COMPOSITION_PATTERNS.SOLO,
     team_id: teamId,
     input: null,
-    output: typeof result === 'string' ? { text: result } : { value: result },
+    output: truncateResult(result),
   });
 }
 

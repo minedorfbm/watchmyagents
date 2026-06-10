@@ -185,6 +185,63 @@ test('safeParseToolArgs: returns null on non-string/object', () => {
   assert.equal(safeParseToolArgs(undefined), null);
 });
 
+// F-32 (v1.4, P2 Codex audit on v1.3.0) — size guards
+test('F-32: safeParseToolArgs truncates oversize JSON string and flags it', () => {
+  // 512 KB string — exceeds the 256 KB default cap.
+  const huge = '{"payload":"' + 'x'.repeat(512 * 1024) + '"}';
+  const parsed = safeParseToolArgs(huge);
+  assert.ok(parsed != null);
+  assert.equal(parsed._wmaTruncated, true);
+  assert.ok(typeof parsed._wmaOriginalBytes === 'number');
+  assert.ok(parsed._wmaOriginalBytes > 256 * 1024);
+});
+
+test('F-32: safeParseToolArgs respects custom maxBytes', () => {
+  const small = '{"k":"' + 'y'.repeat(2000) + '"}';
+  // Below the 256 KB default → passes through normal parse.
+  const okParsed = safeParseToolArgs(small);
+  assert.equal(okParsed._wmaTruncated, undefined);
+  // With a 1 KB cap → triggers truncation.
+  const truncated = safeParseToolArgs(small, 1024);
+  assert.equal(truncated._wmaTruncated, true);
+});
+
+test('F-32: normalizeToolEnd truncates oversize string results', () => {
+  const fix = { name: 'verbose_tool' };
+  const huge = 'A'.repeat(512 * 1024);
+  const evt = normalizeToolEnd({
+    agent: { name: 'a' }, tool: fix, result: huge,
+    toolCall: { callId: 'c1', name: 'verbose_tool' },
+    sessionId: 's', teamId: 't',
+  });
+  assert.equal(evt.output._wmaTruncated, true);
+  assert.ok(evt.output._wmaOriginalBytes >= 512 * 1024);
+  // The visible text portion is bounded at the cap + sentinel
+  assert.ok(evt.output.text.length <= 256 * 1024 + 100);
+  assert.ok(evt.output.text.endsWith('…[truncated by WMA Shield]'));
+});
+
+test('F-32: normalizeToolEnd truncates oversize object results', () => {
+  const huge = { rows: Array(5000).fill('x'.repeat(100)) };
+  const evt = normalizeToolEnd({
+    agent: { name: 'a' }, tool: { name: 'db_query' }, result: huge,
+    toolCall: { callId: 'c1' }, sessionId: 's', teamId: 't',
+  });
+  // Truncation marker replaces the full payload (we don't keep a partial
+  // serialized object — losing structure mid-array would be worse than
+  // a clean marker).
+  assert.equal(evt.output.value._wmaTruncated, true);
+  assert.ok(evt.output.value._wmaOriginalBytes >= 256 * 1024);
+});
+
+test('F-32: small results pass through unchanged', () => {
+  const evt = normalizeToolEnd({
+    agent: { name: 'a' }, tool: { name: 'small_tool' }, result: '{"ok":true}',
+    toolCall: { callId: 'c1' }, sessionId: 's', teamId: 't',
+  });
+  assert.deepEqual(evt.output, { text: '{"ok":true}' });
+});
+
 // ── ToolGuardrailFunctionOutputFactory (shape match @openai/agents) ────
 
 test('factory: allow returns the documented shape', () => {
