@@ -354,8 +354,13 @@ export function wmaToolInputGuardrail(options = {}) {
   let ruleset = options.ruleset || null;
   const tracker = options.tracker
     || createContextTracker({ recentWindowSize: options.recentWindowSize ?? 20 });
+  // v1.3.1 F-29 (P1 Codex audit): provider must be passed explicitly so
+  // shield_decision NDJSON rows carry 'openai-agents' instead of being
+  // mis-attributed to 'anthropic-managed' (DecisionLogger's pre-v1.3.1
+  // hardcoded default). Fortress / Guardian forensic surfaces depend on
+  // this for correct multi-provider attribution.
   const decisionLogger = options.decisionLogger
-    || new DecisionLogger({ logDir, agentId: 'openai-agents', sessionId });
+    || new DecisionLogger({ logDir, agentId: 'openai-agents', sessionId, provider: PROVIDER });
   const logger = options.logger
     || new Logger({ logDir, agentId: 'openai-agents', sessionId, silent: true, bestEffort: false });
 

@@ -336,6 +336,26 @@ test('guardrail: writes shield_decision row with audit chain to NDJSON', async (
   });
 });
 
+// F-29 (v1.3.1, P1 Codex audit on v1.3.0)
+test('guardrail: shield_decision row carries provider="openai-agents" (not "anthropic-managed")', async () => {
+  await withTempLogDir(async (logDir) => {
+    const g = wmaToolInputGuardrail({ ruleset: DENY_RULESET, logDir });
+    await g.run({ agent: FIX_AGENT, toolCall: FIX_TOOL_CALL });
+
+    const day = new Date().toISOString().slice(0, 10);
+    const path = join(logDir, 'openai-agents', `${day}.ndjson`);
+    const text = await readFile(path, 'utf8');
+    const lines = text.trim().split('\n').map((l) => JSON.parse(l));
+
+    const shieldRows = lines.filter((l) => l.action_type === 'shield_decision');
+    assert.ok(shieldRows.length >= 1);
+    // The whole point of F-29: this MUST be 'openai-agents'. Before the
+    // fix it was hardcoded to 'anthropic-managed' in DecisionLogger.
+    assert.equal(shieldRows[0].provider, PROVIDERS.OPENAI_AGENTS);
+    assert.notEqual(shieldRows[0].provider, PROVIDERS.ANTHROPIC_MANAGED);
+  });
+});
+
 test('guardrail: also writes the tool_use observation row alongside shield_decision', async () => {
   await withTempLogDir(async (logDir) => {
     const g = wmaToolInputGuardrail({ ruleset: ALLOW_RULESET, logDir });

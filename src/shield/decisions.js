@@ -15,7 +15,17 @@ import { Logger } from '../logger.js';
 import { createDecisionChain, buildGenesisMarker, newChainId } from './decision-chain.js';
 
 export class DecisionLogger {
-  constructor({ logDir, agentId, sessionId }) {
+  // v1.3.1 F-29 (P1 Codex audit on v1.3.0): `provider` is now an
+  // explicit constructor option. Before v1.3.1 the provider was
+  // hard-coded to `anthropic-managed` in record() — when the OpenAI
+  // Agents SDK adapter (shipped v1.3.0) wrote shield_decision rows
+  // through this logger, those rows were mis-attributed to Anthropic.
+  // Fortress / Guardian forensic surfaces saw OpenAI blocks as
+  // Anthropic blocks. Default is preserved at `anthropic-managed` so
+  // existing v1.2.x callers behave unchanged; the OpenAI adapter
+  // explicitly passes `provider: PROVIDERS.OPENAI_AGENTS`.
+  constructor({ logDir, agentId, sessionId, provider }) {
+    this._provider = provider || 'anthropic-managed';
     // Each DecisionLogger instance owns a single chain segment. A Shield
     // restart creates a fresh DecisionLogger → fresh genesis. The
     // genesis marker is self-describing (agent + session + start time +
@@ -53,7 +63,7 @@ export class DecisionLogger {
       && (decision === 'deny' || decision === 'interrupt');
     return this._logger.write({
       action_type: 'shield_decision',
-      provider: 'anthropic-managed',
+      provider: this._provider,
       tool_name: sourceEvent?.name || sourceEvent?.tool_name || null,
       status: enforced ? 'error' : 'ok',
       error: enforced ? message : null,
