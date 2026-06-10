@@ -19,6 +19,14 @@
     "SECURITY.md",
     "LICENSE"
   ],
+  "exports": {
+    ".": "./src/index.js",
+    "./openai-agents": {
+      "types": "./src/sources/openai-agents-js.d.ts",
+      "default": "./src/openai-agents.js"
+    },
+    "./package.json": "./package.json"
+  },
   "bin": {
     "wma-inspect": "scripts/inspect.js",
     "wma-fetch": "scripts/fetch-anthropic.js",
