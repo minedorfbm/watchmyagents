@@ -399,7 +399,16 @@ export async function* transformRawEventsToWMAActions(rawEventsAsyncIterable, { 
     if (type === 'agent.tool_use' || type === 'agent.mcp_tool_use') {
       pendingToolUse.set(ev.id, {
         ts: tsMillis,
-        name: ev.name || 'unknown',
+        // v1.4.2 F-41 (P1 audit): a missing tool name becomes null, NOT the
+        // literal string 'unknown'. A 'unknown' fallback (a) let a tool_name
+        // DENYLIST silently miss a real tool whose name field was absent
+        // (the rule keys on e.g. "bash"; "unknown" !== "bash" → no match →
+        // default-allow), and (b) collided two distinct unnamed tools into
+        // one forensic bucket. null fails every specific tool_name clause
+        // closed and is honestly absent. tool_name is `string|null` per the
+        // WMAAction contract; normalizeToolName(null) returns null and the
+        // aggregator skips null-named entries from per-tool counts.
+        name: ev.name ?? null,
         isMcp: type === 'agent.mcp_tool_use',
         input: ev.input ?? null,
         mcpServer: ev.server_name ?? ev.mcp_server_name ?? null,
@@ -435,7 +444,7 @@ export async function* transformRawEventsToWMAActions(rawEventsAsyncIterable, { 
         ...pairedMeta,
         id: ev.id,
         action_type: start?.isMcp ? 'mcp_tool_use' : 'tool_use',
-        tool_name: start?.name || 'unknown',
+        tool_name: start?.name ?? null,   // F-41: null, never literal 'unknown'
         timestamp: ts,
         duration_ms: (start?.ts && tsMillis) ? tsMillis - start.ts : null,
         status: isError ? 'error' : 'ok',
@@ -452,7 +461,7 @@ export async function* transformRawEventsToWMAActions(rawEventsAsyncIterable, { 
         ...subAgentMeta,
         id: ev.id,
         action_type: 'custom_tool_use',
-        tool_name: ev.name || 'unknown',
+        tool_name: ev.name ?? null,   // F-41: null, never literal 'unknown'
         timestamp: ts,
         status: 'ok',
         input: ev.input ?? null,

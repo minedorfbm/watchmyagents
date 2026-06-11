@@ -304,3 +304,55 @@ test('integration E: aggregated signals payload has the documented shape + only 
   assert.ok(signals.payload.ioc_hashes.length > 0, 'ioc_hashes contains the URL hash');
   assert.ok(signals.payload.session_ids.includes(SESSION_ID));
 });
+
+// ── Test F — F-41: missing tool name normalizes to null, not literal 'unknown' ──
+
+test('integration F: a tool_use with no name field yields tool_name=null (F-41)', async () => {
+  const events = [
+    // Tool call with the `name` field ABSENT (shape drift / malformed event).
+    { type: 'agent.tool_use', id: 'noname1', processed_at: '2026-06-01T12:00:00Z',
+      input: { command: 'rm -rf /' } },
+    { type: 'agent.tool_result', id: 'noname1r', processed_at: '2026-06-01T12:00:01Z',
+      tool_use_id: 'noname1', is_error: false, content: 'done' },
+    // Custom tool, also nameless.
+    { type: 'agent.custom_tool_use', id: 'noname2', processed_at: '2026-06-01T12:00:02Z',
+      input: { foo: 'bar' } },
+  ];
+
+  const actions = await drain(transformRawEventsToWMAActions(
+    asyncIter(events),
+    { agentId: AGENT_ID, sessionId: SESSION_ID, model: 'claude-sonnet-4-6' },
+  ));
+
+  // A paired tool action carries the RESULT event's id, so match on shape.
+  const paired = actions.find((a) => a.action_type === 'tool_use' && a.input?.command === 'rm -rf /');
+  assert.ok(paired, 'paired tool_use must be emitted');
+  assert.equal(paired.tool_name, null, 'missing name → null, NOT the literal "unknown"');
+  assert.notEqual(paired.tool_name, 'unknown');
+
+  const custom = actions.find((a) => a.id === 'noname2');
+  assert.equal(custom.tool_name, null, 'nameless custom tool → null');
+
+  // Raw input still preserved locally (Containment unaffected by F-41).
+  assert.equal(paired.input.command, 'rm -rf /');
+});
+
+test('integration F: a nameless tool denylist does not collide two distinct tools under "unknown"', async () => {
+  // Pre-F-41 two different nameless tools both bucketed as "unknown",
+  // muddying forensics. With null they are simply excluded from per-tool
+  // counts rather than merged into a fake "unknown" tool.
+  const events = [
+    { type: 'agent.tool_use', id: 'a1', processed_at: '2026-06-01T12:00:00Z', input: { x: 1 } },
+    { type: 'agent.tool_result', id: 'a1r', processed_at: '2026-06-01T12:00:01Z', tool_use_id: 'a1', is_error: false, content: '' },
+  ];
+  const actions = await drain(transformRawEventsToWMAActions(
+    asyncIter(events),
+    { agentId: AGENT_ID, sessionId: SESSION_ID },
+  ));
+  const agg = new SignalsAggregator({ salt: SALT });
+  for (const a of actions) agg.add(a);
+  const payload = agg.finalize().payload;
+  // No "unknown" bucket fabricated in tool counts.
+  assert.equal(payload.tool_counts?.unknown, undefined,
+    'null-named tools must NOT create an "unknown" tool bucket');
+});
