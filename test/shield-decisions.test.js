@@ -110,3 +110,48 @@ test('Phase 1.D: missing mode field defaults to enforce (backwards compat)', asy
   assert.equal(entry.status, 'error', 'absent mode → defaults to enforce → deny is real');
   assert.equal(entry.output.mode, 'enforce');
 });
+
+// ── F-44 (v1.4.2, P1 audit) — record the REAL enforcement outcome ─────────
+
+test('F-44: enforce + deny + enforcementDelivered=true → clean block, output flag true', async () => {
+  const logDir = freshLogDir();
+  const log = new DecisionLogger({ logDir, agentId: AGENT_ID, sessionId: 'sesn_D1' });
+  await log.record({
+    sourceEvent: { id: 'e1', type: 'tool_use', name: 'bash', input: {} },
+    decision: 'deny', ruleId: 'r', ruleName: 'no-bash', message: 'blocked',
+    decidedInMs: 1, mode: 'enforce', enforcementDelivered: true,
+  });
+  const entry = readOnlyLine(logDir, AGENT_ID);
+  assert.equal(entry.status, 'error');
+  assert.equal(entry.error, 'blocked', 'delivered block keeps the plain message');
+  assert.equal(entry.output.enforcement_delivered, true);
+});
+
+test('F-44: enforce + deny + enforcementDelivered=false → row says ENFORCEMENT FAILED, flag false', async () => {
+  const logDir = freshLogDir();
+  const log = new DecisionLogger({ logDir, agentId: AGENT_ID, sessionId: 'sesn_D2' });
+  await log.record({
+    sourceEvent: { id: 'e2', type: 'tool_use', name: 'bash', input: {} },
+    decision: 'deny', ruleId: 'r', ruleName: 'no-bash', message: 'blocked',
+    decidedInMs: 1, mode: 'enforce', enforcementDelivered: false,
+  });
+  const entry = readOnlyLine(logDir, AGENT_ID);
+  assert.equal(entry.status, 'error');
+  assert.match(entry.error, /ENFORCEMENT FAILED \(action NOT blocked\)/,
+    'a failed block must NOT be recorded as a clean block');
+  assert.equal(entry.output.enforcement_delivered, false);
+});
+
+test('F-44: omitting enforcementDelivered keeps the pre-F-44 record shape (no key)', async () => {
+  const logDir = freshLogDir();
+  const log = new DecisionLogger({ logDir, agentId: AGENT_ID, sessionId: 'sesn_D3' });
+  await log.record({
+    sourceEvent: { id: 'e3', type: 'tool_use', name: 'web_search', input: {} },
+    decision: 'allow', ruleId: null, ruleName: '(default)', message: null,
+    decidedInMs: 1, mode: 'enforce',
+  });
+  const entry = readOnlyLine(logDir, AGENT_ID);
+  assert.equal(entry.status, 'ok');
+  assert.equal('enforcement_delivered' in entry.output, false,
+    'allow / non-enforcing callers must not gain the new key');
+});

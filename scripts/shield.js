@@ -146,16 +146,42 @@ async function runSessionWorker({ sessionId, ctx }) {
   // isolation. The helper drops any field it cannot safely normalize
   // (custom tool without salt, missing salt for hashes) rather than
   // passing the raw value through.
-  const fireToFortress = (rawEvent, normalized, result, decidedInMs) => {
+  const fireToFortress = (rawEvent, normalized, result, decidedInMs, enforcementDelivered) => {
     if (!pushDecisionToFortress) return;
     const payload = buildFortressDecisionPayload({
       agentId, sessionId, rawEvent, normalized, result, decidedInMs,
-      signalsSalt,
+      signalsSalt, enforcementDelivered,
     });
     pushDecisionToFortress(payload).catch(() => undefined);
   };
 
-  let processed = 0, enforced = 0, sessionInterrupted = false;
+  // v1.4.2 F-44 (P1 audit): enforcement API calls (confirmDeny / interrupt)
+  // could fail (15s timeout, 5xx, network drop) and the old code just logged
+  // and continued — the violating session kept running with no retry, while
+  // the decision row still claimed "enforced". Retry the call (these are
+  // idempotent: a duplicate deny/interrupt on the same tool_use/session is
+  // safe), and return whether it was ultimately delivered so the caller can
+  // record the REAL outcome and surface a loud failure. Backoff is short and
+  // bounded — the tool already ran in interrupt mode, so landing the session
+  // termination quickly matters more than long waits.
+  const enforceWithRetry = async (thunk, { label, attempts = 3 } = {}) => {
+    let lastErr;
+    for (let i = 0; i < attempts; i++) {
+      try {
+        await thunk();
+        return true;
+      } catch (e) {
+        lastErr = e;
+        if (i < attempts - 1) await sleep(250 * (i + 1));
+      }
+    }
+    process.stderr.write(
+      `[shield/${sessionId.slice(0, 12)}] ${label} FAILED after ${attempts} attempts: ${lastErr?.message}\n`,
+    );
+    return false;
+  };
+
+  let processed = 0, enforced = 0, enforcementFailed = 0, sessionInterrupted = false;
 
   // v1.2.0 — per-session context tracker. Feeds runtime attributes
   // (hour_of_day_utc, agent_age_minutes, recent_error_rate, …) into the
@@ -237,36 +263,43 @@ async function runSessionWorker({ sessionId, ctx }) {
         const modeTag = result.mode === 'shadow' ? ' [SHADOW]' : '';
         sinfo(sessionId, `${rawEvent.type} tool=${normalized.tool_name} → ${result.decision}${modeTag}${result.rule_id ? ` (${result.rule_id})` : ''}`);
 
+        // v1.4.2 F-44 (P1 audit): ENFORCE FIRST, then record the REAL outcome.
+        // Pre-F-44 the decision was recorded as "enforced" before (and
+        // regardless of) the interrupt call, and a failed interrupt was
+        // swallowed with the session left running. Now: shadow + non-blocking
+        // decisions don't enforce (enforcementDelivered stays undefined);
+        // deny/interrupt attempts the interrupt with bounded retry and the
+        // recorded row + Fortress payload carry whether it actually landed.
+        const willEnforce = result.mode !== 'shadow'
+          && (result.decision === 'deny' || result.decision === 'interrupt')
+          && !sessionInterrupted;
+
+        let enforcementDelivered;   // undefined unless we attempt enforcement
+        if (willEnforce) {
+          enforcementDelivered = await enforceWithRetry(
+            () => interruptSession({
+              apiKey, sessionId,
+              followUpMessage: `Shield interrupted: ${result.message || result.rule_name || 'policy violation'}`,
+            }),
+            { label: 'interrupt' },
+          );
+          if (enforcementDelivered) {
+            sessionInterrupted = true;
+            enforced++;
+            swarn(sessionId, 'session interrupted — agent loop stopped');
+          } else {
+            enforcementFailed++;
+            swarn(sessionId, `ENFORCEMENT FAILED — session NOT interrupted; violating action was NOT blocked (${result.rule_id || 'policy'})`);
+          }
+        }
+
         await decisions(sessionId).record({
           sourceEvent: rawEvent, decision: result.decision,
           ruleId: result.rule_id, ruleName: result.rule_name,
           message: result.message, decidedInMs,
-          mode: result.mode,
+          mode: result.mode, enforcementDelivered,
         });
-        fireToFortress(rawEvent, normalized, result, decidedInMs);
-
-        // v1.1.3 Phase 1.D — in shadow mode, the decision is COMPUTED + LOGGED
-        // but NOT enforced. The rule's "would_deny" / "would_interrupt"
-        // outcome flows to Fortress for Platt-scaling calibration + diff-in-diff
-        // efficacy measurement (Guardian Core hardening axes 1 + 4), but the
-        // agent's session continues uninterrupted. Promote to enforce only
-        // after calibration confidence + lifecycle gates (Guardian Core spec
-        // observe → shadow → enforce → retired).
-        if (result.mode === 'shadow') continue;
-
-        if ((result.decision === 'deny' || result.decision === 'interrupt') && !sessionInterrupted) {
-          try {
-            await interruptSession({
-              apiKey, sessionId,
-              followUpMessage: `Shield interrupted: ${result.message || result.rule_name || 'policy violation'}`,
-            });
-            sessionInterrupted = true;
-            enforced++;
-            swarn(sessionId, 'session interrupted — agent loop stopped');
-          } catch (e) {
-            process.stderr.write(`[shield/${sessionId.slice(0, 12)}] interrupt error: ${e.message}\n`);
-          }
-        }
+        fireToFortress(rawEvent, normalized, result, decidedInMs, enforcementDelivered);
         continue;
       }
 
@@ -286,13 +319,18 @@ async function runSessionWorker({ sessionId, ctx }) {
           const sourceEvent = cached?.event;
           if (!sourceEvent) {
             swarn(sessionId, `requires_action for unknown event_id ${eventId} — denying defensively`);
-            try {
-              await confirmDeny({
+            // F-44: retry + loud. If the defensive deny doesn't land, the
+            // agent may proceed or hang — either way the operator must know.
+            const delivered = await enforceWithRetry(
+              () => confirmDeny({
                 apiKey, sessionId, toolUseId: eventId,
                 denyMessage: 'Shield never saw the original tool_use. Denying defensively.',
-              });
-            } catch (e) {
-              process.stderr.write(`[shield/${sessionId.slice(0, 12)}] enforcement error: ${e.message}\n`);
+              }),
+              { label: 'confirmDeny(unknown)' },
+            );
+            if (!delivered) {
+              enforcementFailed++;
+              swarn(sessionId, `ENFORCEMENT FAILED — defensive deny NOT delivered for event ${eventId}`);
             }
             continue;
           }
@@ -312,54 +350,75 @@ async function runSessionWorker({ sessionId, ctx }) {
           const modeTag = result.mode === 'shadow' ? ' [SHADOW]' : '';
           sinfo(sessionId, `requires_action ${sourceEvent.type} tool=${normalized.tool_name} → ${result.decision}${modeTag}${result.rule_id ? ` (${result.rule_id})` : ''}`);
 
-          await decisions(sessionId).record({
-            sourceEvent, decision: result.decision,
-            ruleId: result.rule_id, ruleName: result.rule_name,
-            message: result.message, decidedInMs,
-            mode: result.mode,
-          });
-          fireToFortress(sourceEvent, normalized, result, decidedInMs);
-
           // v1.1.3 Phase 1.D — shadow mode in tool_confirmation: we MUST
           // still send confirmAllow even when the rule said deny/interrupt,
           // otherwise the agent hangs waiting for our response. The
           // decision is logged with mode=shadow so calibration can compare
           // what the rule said vs what was enforced (which is "nothing"
-          // here). For mode=enforce, the original branching below stands.
+          // here). For mode=enforce, the branching below stands.
+          //
+          // v1.4.2 F-44 — ENFORCE FIRST, then record the REAL outcome (see
+          // the interrupt-mode block above for the rationale). Retry + loud
+          // on failure so a swallowed confirm/deny/interrupt can no longer
+          // leave the audit row claiming a block that never happened.
           if (result.mode === 'shadow') {
-            try {
-              await confirmAllow({ apiKey, sessionId, toolUseId: eventId });
-              // No enforced++ — shadow doesn't enforce by definition.
-            } catch (e) {
-              process.stderr.write(`[shield/${sessionId.slice(0, 12)}] shadow confirmAllow error: ${e.message}\n`);
-            }
+            await enforceWithRetry(
+              () => confirmAllow({ apiKey, sessionId, toolUseId: eventId }),
+              { label: 'shadow confirmAllow' },
+            );
+            // No enforced++ — shadow doesn't enforce by definition.
+            await decisions(sessionId).record({
+              sourceEvent, decision: result.decision,
+              ruleId: result.rule_id, ruleName: result.rule_name,
+              message: result.message, decidedInMs, mode: result.mode,
+            });
+            fireToFortress(sourceEvent, normalized, result, decidedInMs);
             continue;
           }
 
-          try {
-            if (result.decision === 'allow') {
-              await confirmAllow({ apiKey, sessionId, toolUseId: eventId });
-              enforced++;
-            } else if (result.decision === 'deny') {
-              await confirmDeny({
+          let enforcementDelivered;   // undefined for allow (no block attempted)
+          let shouldBreak = false;
+          if (result.decision === 'allow') {
+            // An allow is not a block; confirmAllow just lets the tool
+            // proceed. Retry to avoid hangs, but this is not fail-open.
+            const ok = await enforceWithRetry(
+              () => confirmAllow({ apiKey, sessionId, toolUseId: eventId }),
+              { label: 'confirmAllow' },
+            );
+            if (ok) enforced++;
+            else { enforcementFailed++; swarn(sessionId, `confirmAllow NOT delivered for event ${eventId} — agent may hang`); }
+          } else if (result.decision === 'deny') {
+            enforcementDelivered = await enforceWithRetry(
+              () => confirmDeny({
                 apiKey, sessionId, toolUseId: eventId,
                 denyMessage: result.message || `Blocked by ${result.rule_name}`,
-              });
-              enforced++;
-            } else if (result.decision === 'interrupt') {
-              await interruptSession({
+              }),
+              { label: 'confirmDeny' },
+            );
+            if (enforcementDelivered) enforced++;
+            else { enforcementFailed++; swarn(sessionId, `ENFORCEMENT FAILED — deny NOT delivered; tool NOT blocked (${result.rule_id || 'policy'})`); }
+          } else if (result.decision === 'interrupt') {
+            enforcementDelivered = await enforceWithRetry(
+              () => interruptSession({
                 apiKey, sessionId,
                 followUpMessage: `Shield interrupted: ${result.message || result.rule_name}`,
-              });
-              sessionInterrupted = true;
-              enforced++;
-              break;
-            }
-          } catch (e) {
-            process.stderr.write(`[shield/${sessionId.slice(0, 12)}] enforcement error on event ${eventId}: ${e.message}\n`);
+              }),
+              { label: 'interrupt' },
+            );
+            if (enforcementDelivered) { sessionInterrupted = true; enforced++; shouldBreak = true; }
+            else { enforcementFailed++; swarn(sessionId, `ENFORCEMENT FAILED — interrupt NOT delivered; session NOT stopped (${result.rule_id || 'policy'})`); }
           }
 
+          await decisions(sessionId).record({
+            sourceEvent, decision: result.decision,
+            ruleId: result.rule_id, ruleName: result.rule_name,
+            message: result.message, decidedInMs,
+            mode: result.mode, enforcementDelivered,
+          });
+          fireToFortress(sourceEvent, normalized, result, decidedInMs, enforcementDelivered);
+
           toolUseCache.delete(eventId);
+          if (shouldBreak) break;
         }
         continue;
       }

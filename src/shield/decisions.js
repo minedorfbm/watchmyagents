@@ -52,6 +52,16 @@ export class DecisionLogger {
     message,
     decidedInMs,
     mode,             // v1.1.3 Phase 1.D: 'enforce' | 'shadow' (default 'enforce' if absent)
+    // v1.4.2 F-44 (P1 audit): the ACTUAL outcome of the enforcement API call,
+    // captured by the caller AFTER it attempts confirmDeny / interruptSession.
+    //   true      → the block/interrupt landed (confirmed delivered)
+    //   false     → the call FAILED after retries; the violating action was
+    //               NOT blocked on the wire (silent fail-open if we lied here)
+    //   undefined → not applicable (allow / shadow / non-enforcing caller).
+    // Pre-F-44 the row claimed "enforced" purely from mode+decision, before
+    // (and regardless of) the API call — so the tamper-evident audit chain
+    // could assert a block that never happened.
+    enforcementDelivered,
   }) {
     // In shadow mode the decision is computed and logged but NOT enforced.
     // status must reflect what actually happened on the wire: shadow + deny
@@ -61,25 +71,38 @@ export class DecisionLogger {
     const effectiveMode = mode || 'enforce';
     const enforced = effectiveMode === 'enforce'
       && (decision === 'deny' || decision === 'interrupt');
+    // F-44: enforcement was ATTEMPTED but FAILED → the action was NOT blocked.
+    // Surface that honestly instead of recording a clean block.
+    const failedDelivery = enforced && enforcementDelivered === false;
+
+    const output = {
+      decision,
+      rule_id: ruleId,
+      rule_name: ruleName,
+      message,
+      mode: effectiveMode,
+    };
+    // Only add the field when enforcement was actually attempted, so allow /
+    // shadow / pre-F-44 callers keep their exact record shape.
+    if (enforcementDelivered !== undefined) {
+      output.enforcement_delivered = enforcementDelivered;
+    }
+
     return this._logger.write({
       action_type: 'shield_decision',
       provider: this._provider,
       tool_name: sourceEvent?.name || sourceEvent?.tool_name || null,
       status: enforced ? 'error' : 'ok',
-      error: enforced ? message : null,
+      error: failedDelivery
+        ? `ENFORCEMENT FAILED (action NOT blocked): ${message || ruleName || 'policy violation'}`
+        : (enforced ? message : null),
       duration_ms: decidedInMs ?? null,
       input: {
         source_event_id: sourceEvent?.id || null,
         source_event_type: sourceEvent?.type || null,
         tool_input: sourceEvent?.input ?? null,
       },
-      output: {
-        decision,
-        rule_id: ruleId,
-        rule_name: ruleName,
-        message,
-        mode: effectiveMode,
-      },
+      output,
     });
   }
 }

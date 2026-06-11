@@ -57,6 +57,12 @@ function pickInputForHash(input) {
 export function buildFortressDecisionPayload({
   agentId, sessionId, rawEvent, normalized, result, decidedInMs,
   signalsSalt, decidedAtIso,
+  // v1.4.2 F-44 (P1 audit): the real enforcement outcome (true delivered /
+  // false failed / undefined n/a). Lets the Fortress dashboard distinguish a
+  // confirmed block from one whose API call failed — i.e. surface degraded
+  // enforcement instead of trusting the computed verdict. Boolean only; no
+  // raw content, so Containment is unaffected.
+  enforcementDelivered,
 }) {
   // F-19: vendor built-ins survive even without a salt (allowlist short-circuit);
   // custom tool names throw without a salt — we catch and drop the field.
@@ -85,5 +91,7 @@ export function buildFortressDecisionPayload({
     // v1.1.3 Phase 1.D: mode threading so Fortress can store and surface
     // shadow-vs-enforce in the Reports timeline.
     mode: result.mode || undefined,
+    // v1.4.2 F-44: real enforcement outcome (omitted when not applicable).
+    enforcement_delivered: enforcementDelivered === undefined ? undefined : enforcementDelivered,
   };
 }
