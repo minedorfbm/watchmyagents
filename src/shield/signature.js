@@ -50,14 +50,47 @@ import { createPublicKey, verify as cryptoVerify } from 'node:crypto';
 
 const POLICY_SIGNED_FIELDS = ['rule_id', 'match', 'action', 'message', 'priority', 'mode'];
 
-// Recursive deterministic JSON: sorted keys at every depth, arrays kept in order.
+// Recursive deterministic JSON: sorted keys at every depth, arrays kept in
+// order. This MUST mirror JSON.stringify's value semantics exactly — the only
+// intentional difference is key sorting for determinism. The reason is
+// load-bearing: the bytes we hash here have to equal the bytes that land on
+// disk after JSON.stringify(record), because the verifier re-reads the disk
+// record (already JSON round-tripped) and re-canonicalizes it.
+//
+// v1.4.2 F-39 (P0 audit) — the previous version emitted the literal token
+// `undefined` for object keys / array elements whose value was `undefined`
+// (or a function / symbol). JSON.stringify DROPS such object keys and renders
+// such array elements as `null`. So a record like { tool_input: { max_uses:
+// undefined } } hashed to `{"tool_input":{"max_uses":undefined}}` at write
+// time but, after JSON.stringify dropped `max_uses` on disk, re-canonicalized
+// to `{"tool_input":{}}` at verify time — chain_hash mismatch on an UNTAMPERED
+// record. That broke the tamper-evidence guarantee (false alarms masking real
+// tampering) and corrupted the Ed25519 signing domain the same way. The fix
+// makes canonicalize JSON-faithful; for JSON-clean data it is byte-identical
+// to the old behavior, so existing valid chains keep verifying.
 export function canonicalize(value) {
-  if (value === null || typeof value !== 'object') return JSON.stringify(value);
-  if (Array.isArray(value)) {
-    return '[' + value.map(canonicalize).join(',') + ']';
+  if (value === null || typeof value !== 'object') {
+    // JSON.stringify(undefined | function | symbol) returns `undefined`
+    // (the JS value, not a string). Default those to `null` so we never
+    // concatenate the literal token `undefined` into the hashed string.
+    const enc = JSON.stringify(value);
+    return enc === undefined ? 'null' : enc;
   }
+  if (Array.isArray(value)) {
+    // JSON renders undefined / function / symbol array elements as null —
+    // the primitive branch above already returns 'null' for them.
+    return '[' + value.map((v) => canonicalize(v)).join(',') + ']';
+  }
+  // JSON.stringify omits object keys whose value is undefined / a function /
+  // a symbol. Mirror that, or the hashed string carries a key that vanishes
+  // on disk (the F-39 break).
   const keys = Object.keys(value).sort();
-  const pairs = keys.map((k) => JSON.stringify(k) + ':' + canonicalize(value[k]));
+  const pairs = [];
+  for (const k of keys) {
+    const v = value[k];
+    if (v === undefined || typeof v === 'function' || typeof v === 'symbol') continue;
+    pairs.push(JSON.stringify(k) + ':' + canonicalize(v));
+  }
   return '{' + pairs.join(',') + '}';
 }
 

@@ -316,3 +316,57 @@ test('v1.2.0 e2e: verifier catches on-disk tamper of a shield_decision line', as
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+// ── F-39 (v1.4.2, P0 audit) — undefined-valued fields must not break the chain ──
+
+test('F-39: a body with an undefined-valued nested field still verifies after a disk round-trip', () => {
+  // THE BUG: canonicalize emitted the literal token `undefined` for such a
+  // key at write time, but JSON.stringify DROPS it on disk, so the verifier
+  // (re-reading the JSON-parsed record) re-canonicalized to a different
+  // string → chain_hash mismatch on an UNTAMPERED record.
+  const genesis = buildGenesisMarker({ agentId: 'a', sessionId: 's', startedAtIso: '2026-06-09T00:00:00Z', chainId: 'c1' });
+  const chain = createDecisionChain({ genesis });
+
+  // Realistic shape: decisions.js embeds the raw source event input verbatim
+  // (input.tool_input = sourceEvent.input). An object-literal-constructed
+  // event can carry undefined-valued optional fields.
+  const wrapped = chain.wrap({
+    id: 'evt-1',
+    action_type: 'shield_decision',
+    input: { tool_input: { url: 'http://x', max_uses: undefined, retries: undefined } },
+    output: { decision: 'deny', rule_id: undefined },
+  });
+
+  // Round-trip exactly as the NDJSON writer + reader do.
+  const onDisk = JSON.parse(JSON.stringify(wrapped));
+
+  const r = verifyDecisionChain([onDisk]);
+  assert.equal(r.ok, true, `untampered record with undefined fields must verify; got ${JSON.stringify(r)}`);
+  assert.equal(r.count, 1);
+});
+
+test('F-39: undefined fields do not mask a REAL tamper (still detected)', () => {
+  const genesis = buildGenesisMarker({ agentId: 'a', sessionId: 's', startedAtIso: '2026-06-09T00:00:00Z', chainId: 'c1' });
+  const chain = createDecisionChain({ genesis });
+  const wrapped = chain.wrap({
+    id: 'evt-1', action_type: 'shield_decision',
+    input: { tool_input: { url: 'http://x', max_uses: undefined } },
+    output: { decision: 'deny' },
+  });
+  const onDisk = JSON.parse(JSON.stringify(wrapped));
+  // Tamper: flip the decision.
+  onDisk.output.decision = 'allow';
+  const r = verifyDecisionChain([onDisk]);
+  assert.equal(r.ok, false);
+  assert.equal(r.broken_at, 0);
+});
+
+test('F-39: canonicalize matches JSON.stringify key/element semantics (sorted)', () => {
+  // Object keys with undefined/function/symbol values are dropped; array
+  // elements of those types become null — exactly JSON.stringify's rules.
+  const obj = { z: 1, a: undefined, b: function () {}, c: [1, undefined, 'x'], d: 'y' };
+  const viaCanon = canonicalize(JSON.parse(JSON.stringify(obj)));
+  const viaCanonDirect = canonicalize(obj);
+  assert.equal(viaCanonDirect, viaCanon, 'canonicalize must equal canonicalize-after-JSON-roundtrip');
+  assert.equal(viaCanonDirect, '{"c":[1,null,"x"],"d":"y","z":1}');
+});
