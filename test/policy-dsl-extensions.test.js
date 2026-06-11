@@ -48,12 +48,52 @@ test('v1.2.0 DSL: lt and lte', () => {
 });
 
 test('v1.2.0 DSL: numeric ops fail-closed on non-numeric value', () => {
-  assert.equal(matchesPolicy({ x: '5' }, p('x', { gt: 1 })), false);
+  // v1.4.3 F-40: a CLEAN decimal-number string IS now coerced for ordered
+  // comparators (see the F-40 block below) — so { x: '5' } gt 1 now matches.
+  // Everything that is NOT a clean numeric string still fails closed.
   assert.equal(matchesPolicy({ x: null }, p('x', { gte: 0 })), false);
   assert.equal(matchesPolicy({ x: undefined }, p('x', { lt: 100 })), false);
   assert.equal(matchesPolicy({ x: true }, p('x', { lte: 1 })), false);
   assert.equal(matchesPolicy({ x: NaN }, p('x', { gt: 0 })), false);
   assert.equal(matchesPolicy({ x: Infinity }, p('x', { gt: 0 })), false);
+  assert.equal(matchesPolicy({ x: {} }, p('x', { gt: 0 })), false);
+  assert.equal(matchesPolicy({ x: [] }, p('x', { gt: 0 })), false);
+});
+
+// ── F-40 (v1.4.3, P2 audit) — narrow numeric-string coercion ─────────────
+// A deny threshold like { bytes: { gt: 1_000_000 } } must not be evaded by a
+// tool that serializes the number as a string. Coercion is narrow: clean
+// decimal strings only, ordered comparators only, equality untouched.
+
+test('F-40: a clean numeric string IS coerced for ordered comparators', () => {
+  assert.equal(matchesPolicy({ bytes: '1500000' }, p('bytes', { gt: 1000000 })), true);
+  assert.equal(matchesPolicy({ x: '5' }, p('x', { gt: 1 })), true);
+  assert.equal(matchesPolicy({ x: '5' }, p('x', { lte: 5 })), true);
+  assert.equal(matchesPolicy({ x: '-3.5' }, p('x', { lt: 0 })), true);
+  assert.equal(matchesPolicy({ x: '50' }, p('x', { in_range: [10, 100] })), true);
+});
+
+test('F-40: DIRTY numeric-ish strings still fail closed (no loose coercion)', () => {
+  // whitespace, hex, exponent, Infinity, trailing junk → NOT coerced.
+  assert.equal(matchesPolicy({ x: ' 5' }, p('x', { gt: 1 })), false);
+  assert.equal(matchesPolicy({ x: '5 ' }, p('x', { gt: 1 })), false);
+  assert.equal(matchesPolicy({ x: '0x10' }, p('x', { gt: 1 })), false);
+  assert.equal(matchesPolicy({ x: '1e3' }, p('x', { gt: 1 })), false);
+  assert.equal(matchesPolicy({ x: 'Infinity' }, p('x', { gt: 1 })), false);
+  assert.equal(matchesPolicy({ x: '5abc' }, p('x', { gt: 1 })), false);
+  assert.equal(matchesPolicy({ x: '' }, p('x', { gt: -1 })), false);
+});
+
+test('F-40: EQUALITY stays strict — "3" never equals 3 (documented invariant held)', () => {
+  assert.equal(matchesPolicy({ x: '3' }, p('x', 3)), false);
+  assert.equal(matchesPolicy({ x: '3' }, p('x', { in: [3] })), false);
+  assert.equal(matchesPolicy({ x: '3' }, p('x', { not_in: [3] })), true); // "3" is not in [3]
+});
+
+test('F-40: length_* is unaffected by coercion (measures the string, not its value)', () => {
+  // "12345" has length 5 — length_gt:3 matches; its numeric value (12345) is irrelevant.
+  assert.equal(matchesPolicy({ x: '12345' }, p('x', { length_gt: 3 })), true);
+  assert.equal(matchesPolicy({ x: '12345' }, p('x', { length_lt: 3 })), false);
 });
 
 test('v1.2.0 DSL: numeric ops fail-closed when operand itself is malformed', () => {

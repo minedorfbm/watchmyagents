@@ -166,6 +166,17 @@ function safeRegexTest(re, value) {
   return re.test(s);
 }
 
+// v1.4.3 F-40: coerce ONLY a clean decimal-number string to a number, for the
+// ordered numeric comparators. Anything else (real number → passthrough;
+// hex/exponent/whitespace/Infinity/non-string → returned as-is so the caller's
+// Number.isFinite check fails closed). Never used for equality or length_*.
+const CLEAN_NUMERIC_STRING = /^-?\d+(\.\d+)?$/;
+function asOrderedNumber(value) {
+  if (typeof value === 'number') return value;
+  if (typeof value === 'string' && CLEAN_NUMERIC_STRING.test(value)) return Number(value);
+  return value;
+}
+
 function matchValue(value, condition) {
   // Literal scalar match
   if (condition === null || typeof condition !== 'object') {
@@ -186,20 +197,34 @@ function matchValue(value, condition) {
     return condition._regex_any.some(r => safeRegexTest(r, value));
   }
   // v1.2.0 — DSL extensions for ABAC / parameter validation.
-  // Numeric comparators are strict: a non-finite VALUE or a non-finite
-  // CONDITION operand fails-closed. Same as the regex branch: we never
-  // coerce or guess intent for a malformed policy.
+  // Numeric comparators reject a non-finite CONDITION operand (malformed
+  // policy → fail-closed).
+  //
+  // v1.4.3 F-40 (P2 audit) — the VALUE is run through asOrderedNumber():
+  // a real number passes through; a CLEAN decimal-number STRING (e.g. a tool
+  // that serializes `bytes` as "1500000") is coerced to its number. Why: a
+  // deny threshold like { gt: 1000000 } previously did NOT match a stringified
+  // value, so the rule silently no-matched and the action fell through to
+  // default-allow — a fail-OPEN on exfil-size / rate thresholds. Coercion is
+  // deliberately NARROW: only /^-?\d+(\.\d+)?$/ (no hex, exponent, whitespace,
+  // Infinity/NaN). This applies ONLY to the ORDERED comparators below.
+  // EQUALITY (literal / in / not_in) stays strict — "3" still never === 3 —
+  // and length_* (further down) still measures the raw string/array length.
   if (Number.isFinite(condition.gt)) {
-    return Number.isFinite(value) && value > condition.gt;
+    const v = asOrderedNumber(value);
+    return Number.isFinite(v) && v > condition.gt;
   }
   if (Number.isFinite(condition.gte)) {
-    return Number.isFinite(value) && value >= condition.gte;
+    const v = asOrderedNumber(value);
+    return Number.isFinite(v) && v >= condition.gte;
   }
   if (Number.isFinite(condition.lt)) {
-    return Number.isFinite(value) && value < condition.lt;
+    const v = asOrderedNumber(value);
+    return Number.isFinite(v) && v < condition.lt;
   }
   if (Number.isFinite(condition.lte)) {
-    return Number.isFinite(value) && value <= condition.lte;
+    const v = asOrderedNumber(value);
+    return Number.isFinite(v) && v <= condition.lte;
   }
   // in_range: tuple [min, max] inclusive both sides. An inverted tuple
   // (min > max) fails-closed — most likely an operator typo, never a
@@ -207,7 +232,8 @@ function matchValue(value, condition) {
   if (Array.isArray(condition.in_range) && condition.in_range.length === 2) {
     const [min, max] = condition.in_range;
     if (!Number.isFinite(min) || !Number.isFinite(max) || min > max) return false;
-    return Number.isFinite(value) && value >= min && value <= max;
+    const v = asOrderedNumber(value);
+    return Number.isFinite(v) && v >= min && v <= max;
   }
   // length_* operators apply to strings or arrays. Anything else (object,
   // number, null) fails-closed — length is meaningless there.
