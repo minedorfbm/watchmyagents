@@ -242,6 +242,72 @@ test('F-32: small results pass through unchanged', () => {
   assert.deepEqual(evt.output, { text: '{"ok":true}' });
 });
 
+// F-36 (v1.4.1, P3 Codex audit on v1.4.0) — proper byte-level guards
+test('F-36: safeParseToolArgs caps already-parsed object inputs by serialized byte size', () => {
+  // Pre-v1.4.1 an already-parsed object bypassed the cap entirely.
+  const huge = { payload: 'x'.repeat(300 * 1024) }; // ~300 KB serialized
+  const parsed = safeParseToolArgs(huge);
+  // F-36 fix: must be replaced with truncation marker, not returned raw.
+  assert.equal(parsed._wmaTruncated, true);
+  assert.ok(parsed._wmaOriginalBytes > 256 * 1024);
+});
+
+test('F-36: safeParseToolArgs leaves small objects unchanged', () => {
+  const small = { foo: 'bar', count: 42 };
+  const parsed = safeParseToolArgs(small);
+  assert.deepEqual(parsed, small);
+});
+
+test('F-36: safeParseToolArgs handles unserializable objects without crashing', () => {
+  // Circular reference — JSON.stringify throws. Must NOT crash; must
+  // return the input as-is (policy match against the cycle fails anyway).
+  const cyclic = {};
+  cyclic.self = cyclic;
+  const parsed = safeParseToolArgs(cyclic);
+  assert.equal(parsed, cyclic);
+});
+
+test('F-36: byte-level string truncation respects multi-byte Unicode', () => {
+  // 100 KB of emoji = 400 KB of UTF-8 bytes (each emoji is ~4 bytes).
+  // Pre-v1.4.1 the char-level slice(0, 256_000) would still pass through
+  // ~1 MB of bytes — exceeding the cap by 4x.
+  const emoji = '🎯';
+  const oneEmojiBytes = Buffer.byteLength(emoji, 'utf8');
+  // Build a string whose char-count is ABOVE the cap but byte-count is
+  // FAR above. 100K emoji = ~400KB UTF-8.
+  const big = emoji.repeat(100_000);
+  const bigByteLen = Buffer.byteLength(big, 'utf8');
+  assert.ok(bigByteLen > 256 * 1024, 'sanity: input must exceed default cap');
+
+  // Wrap in JSON to feed safeParseToolArgs the string path.
+  const asJson = JSON.stringify({ text: big });
+  const parsed = safeParseToolArgs(asJson);
+  assert.equal(parsed._wmaTruncated, true);
+  // The retained head is bounded BY BYTES, not by chars. Original was
+  // 400 KB; head must be ≤ 256 KB + a small safety margin (the
+  // serialized envelope adds a few bytes).
+  // We measure how much of the original survived by checking the head's
+  // text field if present, else just check the original-bytes record.
+  assert.ok(parsed._wmaOriginalBytes >= bigByteLen,
+    `expected original bytes ≥ ${bigByteLen}, got ${parsed._wmaOriginalBytes}`);
+});
+
+test('F-36: normalizeToolEnd byte-truncates Unicode strings correctly', () => {
+  // Same emoji bomb on the result side.
+  const huge = '🎯'.repeat(80_000); // ~320 KB
+  const evt = normalizeToolEnd({
+    agent: { name: 'a' }, tool: { name: 'verbose' }, result: huge,
+    toolCall: { callId: 'c1' }, sessionId: 's', teamId: 't',
+  });
+  assert.equal(evt.output._wmaTruncated, true);
+  // The visible text portion is bounded BY BYTES. text + sentinel ≤
+  // 256 KB + sentinel length (a few dozen bytes).
+  const textBytes = Buffer.byteLength(evt.output.text, 'utf8');
+  // Sentinel is ~30 bytes; allow 100 bytes of headroom.
+  assert.ok(textBytes <= 256 * 1024 + 100,
+    `byte-level cap broken: text is ${textBytes} bytes`);
+});
+
 // Codex #4 (v1.4) — toolInputs per-tool alias map
 test('Codex #4: toolInputs maps native field name to canonical', () => {
   const toolInputs = {

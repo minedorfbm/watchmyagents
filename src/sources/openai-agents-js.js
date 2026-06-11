@@ -116,24 +116,48 @@ function readEnv(key, fallback) {
 // Policies that match on tool_name still work; policies that match on
 // argument values silently miss the truncated suffix — which is the
 // correct fail-closed behavior for an oversize input.
+// v1.4.1 F-36 (P3 Codex audit on v1.4.0): proper byte-level truncation
+// for UTF-8 strings. Pre-v1.4.1 we used `str.slice(0, maxBytes)`, which
+// slices by CHARACTERS — with multi-byte Unicode (emoji = 4 bytes per
+// char) the cap could be exceeded by up to 3x. This helper cuts on the
+// byte boundary via Buffer and strips the trailing U+FFFD replacement
+// character if the cut landed mid-sequence. We accept the dropped
+// trailing char as acceptable cost: the result is marked _wmaTruncated.
+function truncateUtf8(str, maxBytes) {
+  if (typeof str !== 'string') return str;
+  const buf = Buffer.from(str, 'utf8');
+  if (buf.length <= maxBytes) return str;
+  return buf.subarray(0, maxBytes).toString('utf8').replace(/�+$/, '');
+}
+
 function safeParseToolArgs(rawArgs, maxBytes = DEFAULT_MAX_ARG_BYTES) {
   if (rawArgs == null) return null;
   if (typeof rawArgs === 'object') {
-    // Already parsed by the SDK or the customer. We don't deep-walk
-    // and truncate — that would silently change policy match semantics
-    // on nested fields. Defer the decision to the caller; the size cap
-    // applies at the string-parse boundary, which is the realistic
-    // SDK entry point.
+    // v1.4.1 F-36 — also cap object inputs by their serialized byte
+    // size. Pre-v1.4.1 already-parsed objects bypassed the cap entirely,
+    // which let a misbehaving tool / customer pass a 5 MB object through
+    // safeParseToolArgs unimpeded. We don't deep-walk-and-truncate (that
+    // would silently change policy match semantics on nested fields);
+    // instead we replace the whole input with a truncation marker if
+    // the serialized form exceeds maxBytes.
+    try {
+      const serialized = JSON.stringify(rawArgs);
+      const byteLen = Buffer.byteLength(serialized, 'utf8');
+      if (byteLen > maxBytes) {
+        return { _wmaTruncated: true, _wmaOriginalBytes: byteLen };
+      }
+    } catch {
+      // Unserializable input — return as-is. Policy match against
+      // anything in this object is going to fail anyway.
+    }
     return rawArgs;
   }
   if (typeof rawArgs !== 'string') return null;
   // Byte cap: Buffer.byteLength is the safe length on the wire.
   const byteLen = Buffer.byteLength(rawArgs, 'utf8');
   if (byteLen > maxBytes) {
-    // Truncate to maxBytes worth of bytes (substring is char-bounded;
-    // good enough — exact byte truncation isn't required since we mark
-    // the result as truncated and never feed it back to a real tool).
-    const head = rawArgs.slice(0, maxBytes);
+    // v1.4.1 F-36 — byte-level truncation (was char-level before).
+    const head = truncateUtf8(rawArgs, maxBytes);
     try {
       const parsed = JSON.parse(head);
       // If by luck the head is valid JSON, return it plus the marker.
@@ -374,8 +398,9 @@ function truncateResult(result, maxBytes = DEFAULT_MAX_RESULT_BYTES) {
   if (typeof result === 'string') {
     const byteLen = Buffer.byteLength(result, 'utf8');
     if (byteLen > maxBytes) {
+      // v1.4.1 F-36 — byte-level truncation (was char-level before).
       return {
-        text: result.slice(0, maxBytes) + TRUNCATION_SENTINEL,
+        text: truncateUtf8(result, maxBytes) + TRUNCATION_SENTINEL,
         _wmaTruncated: true,
         _wmaOriginalBytes: byteLen,
       };
