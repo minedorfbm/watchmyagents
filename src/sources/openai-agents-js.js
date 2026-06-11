@@ -445,6 +445,23 @@ export function normalizeToolEnd({ agent, tool, result, toolCall, sessionId, tea
 // policy ruleset on first invocation if `policiesPath` is set.
 
 export function wmaToolInputGuardrail(options = {}) {
+  // v1.4.1 F-35 (P2 Codex audit on v1.4.0): fail-loud at construction
+  // time when nothing safety-relevant is configured. Same intent as the
+  // openaiAgents() factory's mode:'enforce' check, but applied to the
+  // lower-level entry point too — defense in depth. Customers using the
+  // direct import path no longer get a silent "allow all" surprise.
+  const hasPolicySource =
+    options.policiesPath != null ||
+    options.ruleset != null ||
+    options.allowAllWhenUnconfigured === true;
+  if (!hasPolicySource) {
+    throw new Error(
+      'wmaToolInputGuardrail: no policy configured. Pass policiesPath or ruleset. ' +
+      'For demos / smoke tests that intentionally allow all tool calls, pass ' +
+      '{ allowAllWhenUnconfigured: true } explicitly.',
+    );
+  }
+
   const failOpen = options.failOpen === true ? true : DEFAULT_FAIL_OPEN;
   const sessionId = options.sessionId || makeSessionId();
   const logDir = options.logDir
@@ -480,14 +497,16 @@ export function wmaToolInputGuardrail(options = {}) {
       ruleset = await loadPolicies(options.policiesPath);
       return ruleset;
     }
-    // No ruleset, no path → default to "always allow". The customer
-    // probably means to use Fortress; we don't ship that wiring in
-    // v1.3.0 from this entry point. Log a warning once.
+    // v1.4.1 F-35: only reachable when the customer passed
+    // `allowAllWhenUnconfigured: true` — the synchronous check at
+    // construction time has already rejected every other un-configured
+    // shape. Log a loud warning once so demo deployments don't quietly
+    // ship without a real ruleset.
     if (!ensureRuleset._warned) {
       ensureRuleset._warned = true;
       process.stderr.write(
-        '[wma/openai-agents] no policy ruleset configured — guardrail will allow all. ' +
-        'Pass { policiesPath } or { ruleset } to wmaToolInputGuardrail() to enforce.\n',
+        '[wma/openai-agents] allowAllWhenUnconfigured=true — guardrail will allow ALL tool calls. ' +
+        'This is intended for demos only; ship with a real ruleset in production.\n',
       );
     }
     ruleset = { policies: [], default: { action: 'allow' } };

@@ -559,22 +559,51 @@ test('F-31: fail-open also carries a ref code for correlation', async () => {
   });
 });
 
-test('guardrail: missing ruleset + no path → warning and default-allow', async () => {
+// F-35 (v1.4.1, P2 Codex audit on v1.4.0) — fail-loud at construction
+// when no policy source is configured.
+test('F-35: wmaToolInputGuardrail throws synchronously when no policy is configured', () => {
+  // No policiesPath, no ruleset, no allowAllWhenUnconfigured → MUST throw.
+  // Pre-v1.4.1 this was a silent allow-all with a stderr warning.
+  assert.throws(
+    () => wmaToolInputGuardrail({ logDir: '/tmp/noop' }),
+    /no policy configured/,
+  );
+});
+
+test('F-35: allowAllWhenUnconfigured:true is the explicit demo escape hatch', async () => {
   await withTempLogDir(async (logDir) => {
-    // Capture stderr to assert the one-time warning fires.
+    // Capture stderr to assert the loud demo-mode warning fires.
     const orig = process.stderr.write.bind(process.stderr);
     let stderrOut = '';
     process.stderr.write = (chunk) => { stderrOut += String(chunk); return true; };
-
     try {
-      const g = wmaToolInputGuardrail({ logDir });
+      const g = wmaToolInputGuardrail({ logDir, allowAllWhenUnconfigured: true });
       const r = await g.run({ agent: FIX_AGENT, toolCall: FIX_TOOL_CALL });
       assert.equal(r.behavior.type, 'allow');
-      assert.match(stderrOut, /no policy ruleset configured/);
+      assert.match(stderrOut, /allowAllWhenUnconfigured=true/);
+      assert.match(stderrOut, /demos only/);
     } finally {
       process.stderr.write = orig;
     }
   });
+});
+
+test('F-35: explicit ruleset bypasses the fail-loud guard', () => {
+  // Ruleset present → no throw, normal construction.
+  const g = wmaToolInputGuardrail({
+    ruleset: ALLOW_RULESET, logDir: '/tmp/noop',
+  });
+  assert.equal(g.type, 'tool_input');
+});
+
+test('F-35: explicit policiesPath bypasses the fail-loud guard (construction-time only)', () => {
+  // policiesPath is loaded LAZILY on first invocation, so construction
+  // doesn't validate that the file actually exists. The guard only
+  // checks that SOME policy source was declared.
+  const g = wmaToolInputGuardrail({
+    policiesPath: '/tmp/nonexistent-but-declared.json', logDir: '/tmp/noop',
+  });
+  assert.equal(g.type, 'tool_input');
 });
 
 // ── attachWmaWatch — listener registration + detach ────────────────────
