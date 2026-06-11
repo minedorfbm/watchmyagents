@@ -33,7 +33,8 @@ Hardening notes:
 - The launcher loads secrets with `while IFS='=' read -r k v` instead of `. file` / `source file`. Sourcing would shell-evaluate every value, so a value containing `$(cmd)` would execute at every restart. The literal read assigns the bytes verbatim.
 - Values are validated before write: a newline anywhere in a credential aborts the install (would corrupt the env file or inject extra lines).
 - To wipe the credential without uninstalling the service: `chmod 600 ~/.watchmyagents/env && : > ~/.watchmyagents/env` (the daemon will exit on the next missing-env check).
-- Full removal: `wma-service uninstall` deletes the unit, the launcher, the env file, and the `~/.watchmyagents` directory.
+- Service removal: `wma-service uninstall` removes the unit and the launcher but **leaves `~/.watchmyagents/env` on disk** so a re-install keeps your snapshotted keys. This is the default since v1.4.1 (F-37) and is the safer behavior — uninstalling to retry an install does not destroy your API keys.
+- Full removal incl. secrets: `wma-service uninstall --purge` removes the unit, the launcher, the env file, and the whole `~/.watchmyagents` directory (including local NDJSON logs under `~/.watchmyagents/logs`). Use this when you really want to scrub the machine.
 
 ### Local log files
 

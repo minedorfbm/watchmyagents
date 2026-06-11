@@ -11,7 +11,14 @@
 // One integrated install:
 //   wma-service install --agent-id agent_xxx [--interval 5m] [--with-shield]
 //   wma-service status
-//   wma-service uninstall [--with-shield]
+//   wma-service uninstall [--with-shield] [--purge]
+//
+// v1.4.1 F-37 (P3 Codex audit on v1.4.0): `uninstall` defaults to LEAVING
+// ~/.watchmyagents/env on disk (containing the snapshotted API keys). This
+// matches the historical behavior and protects users who uninstall just to
+// reinstall with a different agent-id from losing their snapshot. To wipe
+// the env file + config dir, pass `--purge` explicitly. SECURITY.md says
+// the same thing; do not let the doc + the code drift again.
 //
 // Secrets NEVER go in the plist/unit. They're snapshotted (from the current
 // environment) into a protected env file (~/.watchmyagents/env, chmod 600) that
@@ -289,6 +296,7 @@ function cmdInstall(args) {
 
 function cmdUninstall(args) {
   const withShield = !!args['with-shield'];
+  const purge = !!args.purge;
   if (PLATFORM === 'darwin') {
     macUnload(WATCH_LABEL);
     if (withShield) macUnload(SHIELD_LABEL);
@@ -298,7 +306,18 @@ function cmdUninstall(args) {
   } else {
     die(`unsupported platform "${PLATFORM}"`);
   }
-  info('uninstalled. (Secrets in ' + ENV_FILE + ' left intact — delete manually if you want them gone.)');
+  if (purge) {
+    // F-37: explicit opt-in only. Removes the snapshotted env file (chmod
+    // 600, contains API keys) and the whole config dir. Logs under
+    // ~/.watchmyagents/logs are wiped too — the user asked for purge, so
+    // we do not second-guess them on local NDJSON. `force: true` ensures
+    // we don't throw if the path is already gone.
+    try { rmSync(ENV_FILE, { force: true }); } catch { /* best-effort */ }
+    try { rmSync(CONFIG_DIR, { recursive: true, force: true }); } catch { /* best-effort */ }
+    info(`uninstalled + purged ${CONFIG_DIR} (env file and local logs removed).`);
+  } else {
+    info(`uninstalled. Secrets in ${ENV_FILE} left intact — re-run with --purge to wipe them.`);
+  }
 }
 
 function cmdStatus() {
@@ -328,10 +347,14 @@ function usage() {
 Usage:
   wma-service install --agent-id agent_xxx [--interval 5m] [--log-dir DIR] [--with-shield]
   wma-service status
-  wma-service uninstall [--with-shield]
+  wma-service uninstall [--with-shield] [--purge]
 
 Required env at install (snapshotted to ~/.watchmyagents/env, chmod 600):
   ANTHROPIC_API_KEY, WMA_API_KEY, WMA_FORTRESS_BASE_URL, WMA_SIGNALS_SALT
+
+Uninstall by default leaves ~/.watchmyagents/env on disk so a re-install
+keeps your snapshotted keys. Pass --purge to also delete the env file and
+the whole ~/.watchmyagents directory (including local logs).
 
 macOS → launchd LaunchAgent · Linux → systemd user unit.
 The service starts at login and restarts on crash. Raw logs stay local.

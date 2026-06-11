@@ -287,7 +287,7 @@ export WMA_SIGNALS_SALT="..."                                 # stable per-custo
 
 wma-service install (--agent-id agent_01ABC... | --all-agents) [--interval 1m] [--with-shield]
 wma-service status
-wma-service uninstall [--with-shield]
+wma-service uninstall [--with-shield] [--purge]
 ```
 
 - macOS → **launchd** LaunchAgent · Linux → **systemd** user unit.
@@ -295,6 +295,9 @@ wma-service uninstall [--with-shield]
   runtime — **never** written into the plist/unit.
 - `--with-shield` also runs `wma-shield --policies-source fortress` always-on for
   live enforcement.
+- `uninstall` by default **leaves `~/.watchmyagents/env` on disk** so a re-install
+  keeps your snapshotted keys. Pass `--purge` to also delete the env file and the
+  whole `~/.watchmyagents` directory (including local logs).
 - Raw logs stay local (`~/.watchmyagents/logs`); only anonymized signals upload.
 
 After this, the full Watch→Guardian→Shield loop runs hands-off.
