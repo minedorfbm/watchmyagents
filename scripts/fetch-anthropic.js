@@ -25,7 +25,7 @@ import { createInterface } from 'node:readline';
 import { join, resolve } from 'node:path';
 import { request as httpsRequest } from 'node:https';
 import { URL } from 'node:url';
-import { Logger } from '../src/logger.js';
+import { Logger, tightenMode } from '../src/logger.js';
 import { TokenTracker } from '../src/tokens.js';
 import { SignalsAggregator } from '../src/anonymizer.js';
 import { resolveFortressBase, fortressEndpoint } from '../src/fortress/url.js';
@@ -321,10 +321,26 @@ async function fetchOneShot({ apiKey, agentId, model, logDir, since, sessionId, 
     process.stdout.write(`\n[wma-fetch] session ${sid}\n`);
     if (dumpRaw) {
       assertSafePathSegment(sid, 'session-id'); // defense-in-depth: sid → file path
-      const rawPath = join(logDir, agentId, `raw-${sid}.jsonl`);
-      await mkdir(join(logDir, agentId), { recursive: true, mode: 0o700 });
+      const rawDir = join(logDir, agentId);
+      const rawPath = join(rawDir, `raw-${sid}.jsonl`);
+      await mkdir(rawDir, { recursive: true, mode: 0o700 });
+      // v1.4.1 F-34 (P2 Codex audit): mkdir/appendFile `mode` is creation-
+      // only. If a previous `wma-fetch` run, a different user, or a hand-
+      // rolled mkdir left the directory or file in place with loose perms
+      // (typically 0755/0644 via umask), the original code path kept them.
+      // The raw JSONL carries unredacted API events, so loose perms make
+      // them readable to any local user. Tighten after the directory and
+      // after the first append so an existing inode is brought in line
+      // with the doc promise (0700/0600). Best-effort: chmod failures
+      // here MUST NOT break wma-fetch.
+      await tightenMode(rawDir, 0o700);
+      let firstAppend = true;
       for await (const ev of fetchRawEvents(apiKey, sid)) {
         await appendFile(rawPath, JSON.stringify(ev) + '\n', { encoding: 'utf8', mode: 0o600 });
+        if (firstAppend) {
+          await tightenMode(rawPath, 0o600);
+          firstAppend = false;
+        }
       }
       process.stdout.write(`  raw events  → ${rawPath}\n`);
     }

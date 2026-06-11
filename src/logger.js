@@ -16,6 +16,14 @@ async function tightenMode(path, mode) {
   try { await chmod(path, mode); } catch { /* not fatal */ }
 }
 
+// v1.4.1 F-34 (P2 Codex audit on v1.4.0): re-exported so other writers
+// of WMA-controlled log paths can defend against the same loose-perms
+// trap (mkdir/appendFile `mode` is creation-only). Used by:
+//   scripts/fetch-anthropic.js --dump-raw  (raw API events on disk)
+//   any future code path that mkdir/appendFile into a customer log dir
+// Best-effort by design — failure of chmod must NOT break log writes.
+export { tightenMode };
+
 // PR-B: `framework` → `provider` (canonical name per src/sources/contract.js).
 // PR-C: adds `parent_agent_id` + `composition_pattern` so any future
 // adapter that knows the hierarchy (OpenAI Agents handoffs, CrewAI
