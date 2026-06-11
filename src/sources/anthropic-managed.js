@@ -235,6 +235,16 @@ export async function* transformRawEventsToWMAActions(rawEventsAsyncIterable, { 
   // Pair-tracking maps: event_id of the "start" → its timestamp + metadata
   const pendingModelReq = new Map();    // span.model_request_start.id → ts
   const pendingToolUse = new Map();     // agent.tool_use.id → { ts, name, isMcp, input }
+  // v1.4.2 F-50 (P2 audit): pair custom tools like provider/MCP tools so the
+  // single yielded row carries the REAL status/error/duration. Pre-F-50
+  // agent.custom_tool_use was emitted immediately with a hardcoded status:'ok'
+  // and its outcome arrived on a SEPARATE custom_tool_result row with
+  // tool_name:null — so a failing custom tool never entered error_rate_by_tool
+  // (the aggregator skips null-named rows) and duration was always null. The
+  // customer-controlled tool surface — the highest-risk one — was the only
+  // family with no error/latency signal. Pairing fixes that with no aggregator
+  // special-case (custom_tool_use is already in TOOL_ACTIONS).
+  const pendingCustomTool = new Map();  // agent.custom_tool_use.id → { ts, name, input, startTimestamp, meta }
 
   // v1.1.3 Phase 1.C — Anthropic sub-agent detection.
   // Anthropic Task tool: when a parent agent delegates, a NEW thread is
@@ -378,16 +388,36 @@ export async function* transformRawEventsToWMAActions(rawEventsAsyncIterable, { 
     }
 
     if (type === 'user.custom_tool_result') {
+      // v1.4.2 F-50: pair with the stored start and emit ONE completed
+      // custom_tool_use row carrying the real status/error/duration + the
+      // tool_name from the start (so a failing custom tool now lands in
+      // error_rate_by_tool). Mirrors the agent.tool_result handler. An
+      // orphan result (no matching start — out-of-order / restart) still
+      // emits, with tool_name null and input from the result only, so we
+      // never drop an action.
+      const cStart = pendingCustomTool.get(ev.custom_tool_use_id);
+      pendingCustomTool.delete(ev.custom_tool_use_id);
+      const isError = ev.is_error === true;
+      const cMeta = cStart ? {
+        session_thread_id: cStart.session_thread_id ?? subAgentMeta.session_thread_id,
+        agent_name: cStart.agent_name ?? subAgentMeta.agent_name,
+        composition_pattern: (cStart.session_thread_id != null && subThreadIds.has(cStart.session_thread_id))
+          ? COMPOSITION_PATTERNS.HIERARCHY
+          : COMPOSITION_PATTERNS.SOLO,
+        parent_agent_id: null,
+      } : subAgentMeta;
       yield {
         ...base,
-        ...subAgentMeta,
+        ...cMeta,
         id: ev.id,
-        action_type: 'custom_tool_result',
-        tool_name: null,
+        action_type: 'custom_tool_use',
+        tool_name: cStart?.name ?? null,
         model: model || null,
         timestamp: ts,
-        status: ev.is_error ? 'error' : 'ok',
-        input: { custom_tool_use_id: ev.custom_tool_use_id },
+        duration_ms: (cStart?.ts && tsMillis) ? tsMillis - cStart.ts : null,
+        status: isError ? 'error' : 'ok',
+        error: isError ? extractText(ev.content).slice(0, 500) : null,
+        input: cStart?.input ?? { custom_tool_use_id: ev.custom_tool_use_id },
         output: { content: ev.content ?? null },
       };
       continue;
@@ -483,16 +513,15 @@ export async function* transformRawEventsToWMAActions(rawEventsAsyncIterable, { 
     }
 
     if (type === 'agent.custom_tool_use') {
-      yield {
-        ...base,
-        ...subAgentMeta,
-        id: ev.id,
-        action_type: 'custom_tool_use',
-        tool_name: ev.name ?? null,   // F-41: null, never literal 'unknown'
-        timestamp: ts,
-        status: 'ok',
+      // v1.4.2 F-50: store the start; the paired custom_tool_result (or the
+      // end-of-session flush) emits the single completed row with real status.
+      pendingCustomTool.set(ev.id, {
+        ts: tsMillis,
+        name: ev.name ?? null,        // F-41: null, never literal 'unknown'
         input: ev.input ?? null,
-      };
+        startTimestamp: ts,
+        session_thread_id, agent_name,
+      });
       continue;
     }
 
@@ -655,6 +684,28 @@ export async function* transformRawEventsToWMAActions(rawEventsAsyncIterable, { 
     };
   }
   pendingToolUse.clear();
+
+  // v1.4.2 F-50: same flush for custom tools that started but never returned
+  // a result (Shield-blocked, denied, died mid-flight, session cut). Emitted
+  // as custom_tool_use / status=error / no_result_observed — the high-value
+  // "started but didn't complete" signal, now also covered for custom tools.
+  for (const [useId, pending] of pendingCustomTool) {
+    yield {
+      ...base,
+      session_thread_id: pending.session_thread_id,
+      agent_name: pending.agent_name,
+      id: useId,
+      action_type: 'custom_tool_use',
+      tool_name: pending.name,
+      model: model || null,
+      timestamp: pending.startTimestamp,
+      duration_ms: null,
+      status: 'error',
+      error: 'no_result_observed',
+      input: pending.input,
+    };
+  }
+  pendingCustomTool.clear();
 }
 
 // ────────────────────────────────────────────────────────────────────────

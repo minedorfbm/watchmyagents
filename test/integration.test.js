@@ -356,3 +356,82 @@ test('integration F: a nameless tool denylist does not collide two distinct tool
   assert.equal(payload.tool_counts?.unknown, undefined,
     'null-named tools must NOT create an "unknown" tool bucket');
 });
+
+// ── Test G — F-50: custom tools are paired (real status/error/duration) ──
+
+test('integration G: custom_tool_use + result → ONE paired row with real status + duration (F-50)', async () => {
+  const events = [
+    { type: 'agent.custom_tool_use', id: 'ct1', processed_at: '2026-06-01T12:00:00.000Z',
+      name: 'send_invoice', input: { amount: 100 } },
+    { type: 'user.custom_tool_result', id: 'ct1r', processed_at: '2026-06-01T12:00:02.000Z',
+      custom_tool_use_id: 'ct1', is_error: false, content: 'sent' },
+  ];
+  const actions = await drain(transformRawEventsToWMAActions(
+    asyncIter(events), { agentId: AGENT_ID, sessionId: SESSION_ID },
+  ));
+  const customs = actions.filter((a) => a.action_type === 'custom_tool_use');
+  assert.equal(customs.length, 1, 'exactly ONE custom_tool_use row (paired, not two)');
+  assert.equal(actions.filter((a) => a.action_type === 'custom_tool_result').length, 0,
+    'the separate custom_tool_result row is folded into the paired row');
+  const c = customs[0];
+  assert.equal(c.tool_name, 'send_invoice');
+  assert.equal(c.status, 'ok');
+  assert.equal(c.duration_ms, 2000, 'duration computed from start→result');
+  assert.equal(c.input.amount, 100, 'input preserved from the start');
+});
+
+test('integration G: a FAILING custom tool surfaces in error_rate_by_tool (F-50)', async () => {
+  const events = [
+    { type: 'agent.custom_tool_use', id: 'ct2', processed_at: '2026-06-01T12:00:00Z',
+      name: 'risky_tool', input: {} },
+    { type: 'user.custom_tool_result', id: 'ct2r', processed_at: '2026-06-01T12:00:01Z',
+      custom_tool_use_id: 'ct2', is_error: true, content: 'boom' },
+  ];
+  const actions = await drain(transformRawEventsToWMAActions(
+    asyncIter(events), { agentId: AGENT_ID, sessionId: SESSION_ID },
+  ));
+  const c = actions.find((a) => a.action_type === 'custom_tool_use');
+  assert.equal(c.status, 'error');
+  assert.equal(c.error, 'boom', 'error text from the result is captured');
+
+  // The whole point: the aggregator now attributes the error to the tool.
+  const agg = new SignalsAggregator({ salt: SALT });
+  for (const a of actions) agg.add(a);
+  const payload = agg.finalize().payload;
+  // The tool is keyed by normalizeToolName (tool_hash:...), so assert on the
+  // VALUE: the custom tool errored on its only call → error_rate 1.0.
+  const rates = Object.values(payload.error_rate_by_tool || {});
+  assert.ok(rates.length === 1 && rates[0] === 1,
+    `failing custom tool must appear in error_rate_by_tool at rate 1.0 (got ${JSON.stringify(payload.error_rate_by_tool)})`);
+});
+
+test('integration G: a custom tool with NO result is flushed as no_result_observed (F-50)', async () => {
+  const events = [
+    { type: 'agent.custom_tool_use', id: 'ct3', processed_at: '2026-06-01T12:00:00Z',
+      name: 'blocked_custom', input: { x: 1 } },
+    { type: 'session.status_terminated', id: 'term', processed_at: '2026-06-01T12:00:05Z',
+      stop_reason: { type: 'session_ended' } },
+  ];
+  const actions = await drain(transformRawEventsToWMAActions(
+    asyncIter(events), { agentId: AGENT_ID, sessionId: SESSION_ID },
+  ));
+  const c = actions.find((a) => a.action_type === 'custom_tool_use' && a.id === 'ct3');
+  assert.ok(c, 'unresolved custom tool must still be emitted (trace ALL actions)');
+  assert.equal(c.status, 'error');
+  assert.equal(c.error, 'no_result_observed');
+  assert.equal(c.tool_name, 'blocked_custom');
+});
+
+test('integration G: an orphan custom_tool_result (no start) still emits, tool_name null (F-50)', async () => {
+  const events = [
+    { type: 'user.custom_tool_result', id: 'orphan_r', processed_at: '2026-06-01T12:00:01Z',
+      custom_tool_use_id: 'never_seen', is_error: true, content: 'late' },
+  ];
+  const actions = await drain(transformRawEventsToWMAActions(
+    asyncIter(events), { agentId: AGENT_ID, sessionId: SESSION_ID },
+  ));
+  const c = actions.find((a) => a.action_type === 'custom_tool_use');
+  assert.ok(c, 'orphan result still emits an action (never drop)');
+  assert.equal(c.tool_name, null);
+  assert.equal(c.status, 'error');
+});
