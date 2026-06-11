@@ -38,6 +38,7 @@ import {
   AnthropicManagedSource, effectiveEnforcementMode,
 } from '../src/sources/anthropic-managed.js';
 import { maybePrintVersionAndExit } from '../src/version.js';
+import { SeenTracker } from '../src/watch-state.js';
 
 function parseArgs(argv) {
   const out = {};
@@ -380,12 +381,19 @@ async function fetchOneShot({ apiKey, agentId, model, logDir, since, sessionId, 
 // Fortress display_name (opt-in); default sends the agent id only (Containment).
 async function runWatch({ apiKey, resolveAgents, fleet, logDir, intervalMs, windowMs, uploadCtx, sendNames }) {
   let agents = await resolveAgents();
-  const seenIds = new Set();     // stable Anthropic event ids already captured
+  // v1.4.3 F-51: bounded dedup. Preloaded on-disk ids are static; runtime ids
+  // are tracked per-session and dropped on terminate (see src/watch-state.js).
+  const preloaded = [];
   for (const ag of agents) {
-    for (const id of await preloadSeenIds(logDir, ag.agentId)) seenIds.add(id);
+    for (const id of await preloadSeenIds(logDir, ag.agentId)) preloaded.push(id);
   }
+  const seen = new SeenTracker(preloaded);
   const loggers = new Map();     // sessionId → Logger (session ids are globally unique)
-  const ended = new Set();       // terminated sessions (skip)
+  const ended = new Set();       // terminated sessions (skip). Grows one id per
+                                  // terminated session over the daemon's life —
+                                  // bounded by session COUNT (ids only, the
+                                  // smallest term); the per-EVENT growth that
+                                  // actually drove OOM is fixed via SeenTracker.
   const sessionAgent = new Map();// sessionId → { agentId, model, displayName }
   const priors = new Map();      // agentId → previous classification (threads the
                                   // typology state machine across upload cycles)
@@ -399,7 +407,7 @@ async function runWatch({ apiKey, resolveAgents, fleet, logDir, intervalMs, wind
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
 
-  info(`watch mode — ${agents.length} agent(s)${fleet ? ' (fleet, re-discovered each cycle)' : ''}, interval ${Math.round(intervalMs / 1000)}s, discovery window ${Math.round(windowMs / 3600000)}h, upload ${uploadCtx ? 'ON' : 'OFF'}, ${seenIds.size} known events preloaded`);
+  info(`watch mode — ${agents.length} agent(s)${fleet ? ' (fleet, re-discovered each cycle)' : ''}, interval ${Math.round(intervalMs / 1000)}s, discovery window ${Math.round(windowMs / 3600000)}h, upload ${uploadCtx ? 'ON' : 'OFF'}, ${seen.size} known events preloaded`);
 
   while (!ac.signal.aborted) {
     if (fleet) { const next = await resolveAgents(); if (next.length) agents = next; }
@@ -427,6 +435,14 @@ async function runWatch({ apiKey, resolveAgents, fleet, logDir, intervalMs, wind
       if (ac.signal.aborted) break;
       if (ended.has(sid)) continue;
       const tag = fleet ? `[${ag.displayName}] ` : '';
+      // v1.4.3 F-51: top-level guard around the WHOLE per-session body. Pre-fix
+      // only the fetch + upload had try/catch; an unguarded throw elsewhere
+      // (e.g. ENOSPC/EACCES on the fail-loud session_end logger.write, or a
+      // malformed entry in TokenTracker) propagated out of the loop and
+      // KILLED the daemon — silent total collection-stop on a backgrounded
+      // process. Now any single session's failure drops that session for the
+      // cycle and the daemon survives.
+      try {
       let logger = loggers.get(sid);
       if (!logger) { logger = new Logger({ logDir, agentId: ag.agentId, sessionId: sid, silent: true }); loggers.set(sid, logger); }
 
@@ -434,8 +450,8 @@ async function runWatch({ apiKey, resolveAgents, fleet, logDir, intervalMs, wind
       let sawTerminated = false;
       try {
         for await (const entry of fetchSessionEntries({ apiKey, agentId: ag.agentId, sessionId: sid, model: ag.model })) {
-          if (entry.id && seenIds.has(entry.id)) continue;
-          if (entry.id) seenIds.add(entry.id);
+          if (entry.id && seen.has(sid, entry.id)) continue;
+          if (entry.id) seen.add(sid, entry.id);
           const written = await logger.write(entry);
           fresh.push(written);
           if (entry.action_type === 'state_transition'
@@ -492,8 +508,18 @@ async function runWatch({ apiKey, resolveAgents, fleet, logDir, intervalMs, wind
           session_cost_usd: stats.cost_usd || null,
         });
         ended.add(sid);
-        sessionAgent.delete(sid);   // bound memory: terminated sessions aren't re-fetched
+        // v1.4.3 F-51: bound memory — terminated sessions aren't re-fetched,
+        // so drop their per-session dedup set AND their Logger object (the
+        // latter was never deleted pre-fix → unbounded growth of Logger
+        // instances over a long daemon run).
+        sessionAgent.delete(sid);
+        seen.forgetSession(sid);
+        loggers.delete(sid);
         info(`${tag}session ${sid.slice(0, 16)}… terminated — closed`);
+      }
+      } catch (e) {
+        // F-51 top-level guard: never let one session's failure kill the loop.
+        warn(`${tag}session ${sid.slice(0, 16)}…: cycle error (skipped): ${e.message}`);
       }
     }
 
