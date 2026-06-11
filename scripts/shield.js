@@ -631,9 +631,21 @@ async function main() {
     catch (e) { warn(`${tag}could not fetch agent config (${e.message}). Defaulting to interrupt mode.`); }
 
     info(`${tag}armed — ${ruleset.policies.length} policies · default ${ruleset.default.action} · mode ${mode}${agentMeta?.name ? ` · "${agentMeta.name}"` : ''}`);
-    if (mode === 'interrupt' && !fleet) {
-      warn('DEGRADED mode — Shield will interrupt AFTER a violating tool runs.');
-      warn(`For pre-execution blocking, run: wma-shield --setup-guide --agent-id ${aid}`);
+    // v1.4.2 F-43 (P0 audit): surface the DEGRADED (interrupt) mode in BOTH
+    // single and fleet runs. Pre-fix this warning was gated on `!fleet`, so a
+    // fleet operator — the LEAST likely to inspect each agent's mode and the
+    // MOST likely to assume uniform pre-execution blocking — got no signal
+    // that some/all of the fleet only terminates the session AFTER a
+    // violating tool runs. In fleet mode we warn per newly-armed degraded
+    // agent (once per agent lifetime, not per event) AND the caller emits a
+    // fleet-level summary count after the initial arm.
+    if (mode === 'interrupt') {
+      if (fleet) {
+        warn(`${tag}DEGRADED mode (interrupt) — no pre-execution blocking; session is terminated AFTER a violating tool runs.`);
+      } else {
+        warn('DEGRADED mode — Shield will interrupt AFTER a violating tool runs.');
+        warn(`For pre-execution blocking, run: wma-shield --setup-guide --agent-id ${aid}`);
+      }
     }
 
     const loggers = new Map();
@@ -660,6 +672,7 @@ async function main() {
   // created after startup gets armed + protected without a restart. A per-agent
   // arm failure is skipped and retried on the next reconcile.
   const armed = new Set();
+  const degraded = new Set();   // F-43: agents armed in interrupt (no pre-block) mode
   const running = [];
   const armNew = async (ids) => {
     for (const aid of ids) {
@@ -667,13 +680,19 @@ async function main() {
       const ctx = await setupAgent(aid);
       if (!ctx) continue;                 // skipped (policy fetch failed) → retry next reconcile
       armed.add(aid);
+      if (ctx.mode === 'interrupt') degraded.add(aid);
       running.push(runAgentWide(ctx));    // fire; blocks on the shared signal until shutdown
-      info(`fleet: armed ${aid.slice(0, 16)}…`);
+      info(`fleet: armed ${aid.slice(0, 16)}… (mode ${ctx.mode})`);
     }
   };
   await armNew(agentIds);
   if (armed.size === 0) {
     die(`error: no agents could be armed (${agentIds.length} discovered; all policy fetches failed). Check WMA_API_KEY / WMA_FORTRESS_BASE_URL.`);
+  }
+  // F-43: fleet-level honesty summary — how much of the fleet has only
+  // post-hoc termination vs true pre-execution blocking.
+  if (degraded.size > 0) {
+    warn(`fleet: ${degraded.size}/${armed.size} agent(s) in DEGRADED interrupt mode — those have NO pre-execution blocking (the tool runs, then the session is terminated). Configure permission_policy: always_ask on those agents for true pre-block.`);
   }
   // v1.1.0 Phase 1 L3: supervisor reconcile every 30s (was 60s) so a
   // freshly-created Anthropic agent gets armed sub-30s instead of sub-minute.

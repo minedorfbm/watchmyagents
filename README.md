@@ -5,8 +5,12 @@
 Designed around four guarantees:
 
 1. **Local-first.** Raw payloads (prompts, outputs, tool arguments) stay 100% on your machine. Nothing leaves unless you explicitly opt in.
-2. **Trace everything, not just what costs tokens.** A `web_fetch` to a suspicious URL carries zero tokens but is exactly what a security audit needs to see. Even tool calls that were blocked, denied, or interrupted before producing a result are logged with `status: error` so the audit trail is complete.
-3. **Real-time enforcement, not post-hoc auditing.** A policy accepted in Fortress UI is active in Shield within ~1 second via SSE + Postgres realtime. A policy violation is blocked in ~3ms via Anthropic's `user.tool_confirmation` / `user.interrupt` events. Measured in production, not promised in roadmap.
+2. **Trace everything, not just what costs tokens.** A `web_fetch` to a suspicious URL carries zero tokens but is exactly what a security audit needs to see. Tool calls that Shield denied — and sessions it interrupted — are logged with their `status` so the audit trail is complete.
+3. **Real-time enforcement.** A policy accepted in Fortress UI is active in Shield within ~1 second via SSE + Postgres realtime. Shield renders an allow/deny **decision in ~3ms** (local evaluation, measured in production). How that decision is *applied* depends on the agent's configuration, and the distinction matters:
+   - **`tool_confirmation` mode** — when the agent has a tool with `permission_policy: always_ask`, Anthropic pauses the agent and Shield **blocks the tool *before* it executes** (`user.tool_confirmation`). True prevention.
+   - **`interrupt` mode** (zero-config default) — Shield observes the tool-use event *after* Anthropic's cloud has already run the tool, then **terminates the session** (`user.interrupt`). This is **detect-and-terminate, not prevention**: the offending call has already executed; the interrupt stops *subsequent* steps. A single-shot action (one exfil `web_fetch`, one `rm -rf`) is not prevented in this mode.
+
+   See [Shield — real-time policy enforcement](#shield--real-time-policy-enforcement) for how to configure pre-execution blocking.
 4. **Zero dependencies.** Only Node.js 18+ built-ins. No telemetry, no phone-home, no hidden network calls. Preserved through every release including the SSE realtime work (custom RFC-compliant SSE parser, no `@supabase/realtime-js` or `ws` dep).
 
 ### Measured end-to-end loop latency (v1.1.0+)
@@ -17,8 +21,10 @@ Watch capture        ────────► Fortress signal upload   : ≤ 
 Fortress signal      ────────► Guardian analysis        : ≤ 30s     (event-triggered, debounced)
 Guardian proposal    ────────► Operator accepts in UI   : (human)
 Policy accepted      ────────► Shield receives via SSE  : ≤ 1s      (sub-second push, validated)
-Shield evaluates     ────────► Decision (allow/deny)    : ≤ 3ms     (measured on Anthropic Managed)
+Shield evaluates     ────────► Decision (allow/deny)    : ≤ 3ms     (decision latency, not time-to-block)
 ```
+
+> The ≤ 3ms is Shield's local *decision* latency. Time-to-**block** depends on the enforcement mode: `tool_confirmation` blocks before execution; `interrupt` (default) terminates the session *after* the violating tool ran. See guarantee #3 above and the Shield section.
 
 Full audit-clean: 3 successful Codex audit passes (v1.0.1, v1.0.2, v1.0.3) closed 7 findings with zero regression. Containment invariant (raw payloads never leave the customer machine) is formalized in `docs/CONTAINMENT.md` and locked by 8 regression tests.
 
