@@ -120,24 +120,47 @@ export async function listAgents(apiKey, { limit = 100 } = {}) {
   return agents;
 }
 
-export async function listSessions(apiKey, { agentId, since, limit = 100 } = {}) {
+// v1.4.2 F-45 (P1 audit): page through the FULL session list and filter by
+// `since` per-row — do NOT early-break. The previous version stopped
+// paginating at the first session older than `since`, assuming the API
+// returns sessions newest-first by created_at. Nothing enforces that ordering
+// (no `order=` param is sent), and the doc never promised it. If the API
+// ordered by id / updated_at, a single out-of-window session aborted
+// pagination while newer in-window sessions sat on later pages — they were
+// NEVER enumerated, so that agent's activity went untraced (a security blind
+// spot, the exact failure this tool exists to prevent). We now scan every
+// page; a session older than `since` is skipped, not a stop signal. A null
+// created_at is treated as in-window (we cannot prove it is old). `maxPages`
+// is a pathological-loop backstop; hitting it warns loudly rather than
+// silently truncating.
+export async function listSessions(apiKey, { agentId, since, limit = 100, maxPages = 1000, _fetch } = {}) {
+  // _fetch is an injectable page-fetcher seam for tests (path -> response
+  // object with { data, has_more }). Production uses the real getWithRetry.
+  const fetchPage = _fetch || ((path) => getWithRetry(apiKey, path));
   const sessions = [];
   let after = null;
-  while (true) {
+  let pages = 0;
+  while (pages < maxPages) {
+    pages++;
     const qs = new URLSearchParams({ limit: String(limit) });
     if (agentId) qs.set('agent_id', agentId);
     if (after) qs.set('after_id', after);
-    const data = await getWithRetry(apiKey, `/v1/sessions?${qs}`);
+    const data = await fetchPage(`/v1/sessions?${qs}`);
     const page = data.data || [];
-    let stop = false;
     for (const s of page) {
       const created = s.created_at ? new Date(s.created_at) : null;
-      if (since && created && created < since) { stop = true; break; }
+      if (since && created && created < since) continue;   // skip, do NOT stop
       sessions.push(s);
     }
-    if (stop || !data.has_more || page.length === 0) break;
+    if (!data.has_more || page.length === 0) break;
     after = page[page.length - 1]?.id;
     if (!after) break;
+  }
+  if (pages >= maxPages) {
+    process.stderr.write(
+      `[wma] listSessions: hit maxPages=${maxPages} for agent ${agentId || '(all)'} — ` +
+      'session enumeration may be INCOMPLETE. Raise maxPages or narrow the agent set.\n',
+    );
   }
   return sessions;
 }
