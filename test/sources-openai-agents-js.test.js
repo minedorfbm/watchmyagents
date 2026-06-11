@@ -485,6 +485,56 @@ test('guardrail: interrupt ruleset → behavior.type === "throwException"', asyn
   });
 });
 
+// ── F-42 (v1.4.2, P1 audit) — defensive tool-name read ──────────────────
+// A tool_name-keyed deny rule MUST fire regardless of where the SDK puts the
+// tool name on the guardrail's toolCall object. Pre-fix only `.name` was
+// read; if the SDK used .function.name / .toolName, tool_name was null and
+// the deny silently no-matched → total enforcement bypass.
+
+test('F-42: deny fires when the tool name is under toolCall.function.name', async () => {
+  await withTempLogDir(async (logDir) => {
+    const g = wmaToolInputGuardrail({ ruleset: DENY_RULESET, logDir });
+    const r = await g.run({
+      agent: FIX_AGENT,
+      // No top-level .name — name lives under .function.name (OpenAI fn-tool shape).
+      toolCall: { callId: 'c1', function: { name: 'search_kb' }, arguments: '{}' },
+    });
+    assert.equal(r.behavior.type, 'rejectContent', 'deny must fire via function.name');
+    assert.equal(r.outputInfo.wma.rule_id, 'block-search');
+  });
+});
+
+test('F-42: deny fires when the tool name is under toolCall.toolName', async () => {
+  await withTempLogDir(async (logDir) => {
+    const g = wmaToolInputGuardrail({ ruleset: DENY_RULESET, logDir });
+    const r = await g.run({
+      agent: FIX_AGENT,
+      toolCall: { callId: 'c1', toolName: 'search_kb', arguments: '{}' },
+    });
+    assert.equal(r.behavior.type, 'rejectContent', 'deny must fire via toolName');
+  });
+});
+
+test('F-42: deny fires when the tool name is on data.tool.name', async () => {
+  await withTempLogDir(async (logDir) => {
+    const g = wmaToolInputGuardrail({ ruleset: DENY_RULESET, logDir });
+    const r = await g.run({
+      agent: FIX_AGENT,
+      tool: { name: 'search_kb' },
+      toolCall: { callId: 'c1', arguments: '{}' },
+    });
+    assert.equal(r.behavior.type, 'rejectContent', 'deny must fire via data.tool.name');
+  });
+});
+
+test('F-42: top-level toolCall.name still wins (precedence unchanged)', async () => {
+  await withTempLogDir(async (logDir) => {
+    const g = wmaToolInputGuardrail({ ruleset: DENY_RULESET, logDir });
+    const r = await g.run({ agent: FIX_AGENT, toolCall: FIX_TOOL_CALL });
+    assert.equal(r.behavior.type, 'rejectContent');
+  });
+});
+
 test('guardrail: shadow mode logs but always allows', async () => {
   await withTempLogDir(async (logDir) => {
     const g = wmaToolInputGuardrail({ ruleset: SHADOW_RULESET, logDir });

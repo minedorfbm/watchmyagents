@@ -549,10 +549,26 @@ export function wmaToolInputGuardrail(options = {}) {
       try {
         const rs = await ensureRuleset();
 
+        // v1.4.2 F-42 (P1 audit): read the tool name DEFENSIVELY across the
+        // shapes @openai/agents may use for the guardrail's toolCall object.
+        // The adapter already knows the id lives under a non-obvious key
+        // (makeEventId reads callId||id), so the name may likewise sit under
+        // .name, .toolName, or .function.name depending on SDK version/tool
+        // kind. If we only read .name and the SDK puts it elsewhere, tool_name
+        // is null and EVERY tool_name-keyed deny rule silently misses — a
+        // total enforcement bypass. Coalesce all known shapes; null only if
+        // none are present (then tool_name-keyed rules correctly no-match,
+        // and the operator can still deny on action_type alone).
+        const toolName = toolCall?.name
+          ?? toolCall?.toolName
+          ?? toolCall?.function?.name
+          ?? data?.tool?.name
+          ?? null;
+
         // 1. Normalize the about-to-fire tool_use event.
         const event = normalizeToolStart({
           agent,
-          tool: { name: toolCall?.name },
+          tool: { name: toolName },
           toolCall,
           sessionId,
           teamId: getTeamId(),
