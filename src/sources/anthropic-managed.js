@@ -22,6 +22,7 @@ import {
   getAgentConfig, detectAlwaysAsk,
   confirmAllow, confirmDeny, interruptSession,
 } from '../shield/enforce.js';
+import { safeNonNegInt } from '../tokens.js';
 
 const API_HOST = 'api.anthropic.com';
 const BETA = 'managed-agents-2026-04-01';
@@ -302,10 +303,13 @@ export async function* transformRawEventsToWMAActions(rawEventsAsyncIterable, { 
       const startTs = pendingModelReq.get(ev.model_request_start_id);
       pendingModelReq.delete(ev.model_request_start_id);
       const u = ev.model_usage || {};
-      const i = u.input_tokens || 0;
-      const o = u.output_tokens || 0;
-      const cr = u.cache_read_input_tokens || 0;
-      const cw = u.cache_creation_input_tokens || 0;
+      // v1.4.2 F-49 (P2 audit): sanitize to non-negative integers. A
+      // malformed/adversarial model_usage (NaN, negative, string) must not
+      // zero-out or poison the token totals that drive cost/abuse detection.
+      const i = safeNonNegInt(u.input_tokens);
+      const o = safeNonNegInt(u.output_tokens);
+      const cr = safeNonNegInt(u.cache_read_input_tokens);
+      const cw = safeNonNegInt(u.cache_creation_input_tokens);
       yield {
         ...base,
         ...subAgentMeta,

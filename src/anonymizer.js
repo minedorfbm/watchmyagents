@@ -36,6 +36,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { createInterface } from 'node:readline';
+import { safeNonNegInt } from './tokens.js';
 
 // ── Configuration ────────────────────────────────────────────────────────
 
@@ -297,8 +298,10 @@ export class SignalsAggregator {
       for (const h of extractIocs(entry, this.salt)) this.iocHashes.add(h);
     }
 
-    // Tokens
-    if (typeof entry.tokens_used === 'number') this.tokensTotal += entry.tokens_used;
+    // Tokens — v1.4.2 F-49: sanitize so a NaN/Infinity/negative tokens_used
+    // can't poison the uploaded tokens_total (a single absurd value would
+    // otherwise distort the whole window's cost-anomaly signal).
+    this.tokensTotal += safeNonNegInt(entry.tokens_used);
 
     // Stop reasons (state_transition entries carry these)
     const stopType = entry.output?.stop_reason?.type;

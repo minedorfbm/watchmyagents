@@ -4,14 +4,26 @@
 // token counts (split + by-model) are tracked.
 export const DEFAULT_PRICING = {};
 
+// v1.4.2 F-49 (P2 audit): coerce a token/usage value to a safe non-negative
+// integer. The old `x || 0` is a FALSY guard, not a numeric one — it lets
+// negatives through (`-5 || 0` === -5) and a NaN propagates through later
+// arithmetic to poison totals (`NaN + n` → NaN → `|| null` → null), silently
+// ZEROING a real LLM call's tokens. A malformed or adversarial usage payload
+// could thus under-report the security-relevant consumption signal (a runaway
+// / abused agent) or drive aggregate token/cost negative. Anything not a
+// finite non-negative number becomes 0.
+export function safeNonNegInt(x) {
+  return Number.isFinite(x) && x >= 0 ? Math.trunc(x) : 0;
+}
+
 export function estimateCost(model, t, pricing) {
   if (!model) return null;
   const p = (pricing && pricing[model]) || DEFAULT_PRICING[model];
   if (!p) return null;
-  const inT = t.input_tokens || 0;
-  const outT = t.output_tokens || 0;
-  const cr = t.cache_read_tokens || 0;
-  const cw = t.cache_creation_tokens || 0;
+  const inT = safeNonNegInt(t.input_tokens);
+  const outT = safeNonNegInt(t.output_tokens);
+  const cr = safeNonNegInt(t.cache_read_tokens);
+  const cw = safeNonNegInt(t.cache_creation_tokens);
   const cost = ((inT * (p.input || 0)) + (outT * (p.output || 0)) +
                 (cr * (p.cache_read || 0)) + (cw * (p.cache_write || 0))) / 1_000_000;
   return Math.round(cost * 1_000_000) / 1_000_000;
@@ -38,13 +50,16 @@ export class TokenTracker {
     if (entry.action_type === 'session_end') return;
 
     const t = {
-      input: entry.input_tokens || 0,
-      output: entry.output_tokens || 0,
-      cache_read: entry.cache_read_tokens || 0,
-      cache_creation: entry.cache_creation_tokens || 0,
+      input: safeNonNegInt(entry.input_tokens),
+      output: safeNonNegInt(entry.output_tokens),
+      cache_read: safeNonNegInt(entry.cache_read_tokens),
+      cache_creation: safeNonNegInt(entry.cache_creation_tokens),
     };
-    const sum = entry.tokens_used || (t.input + t.output + t.cache_read + t.cache_creation);
-    const cost = entry.cost_usd || 0;
+    // F-49: a provided tokens_used is sanitized too; 0/missing falls back to
+    // the (sanitized) component sum.
+    const provided = safeNonNegInt(entry.tokens_used);
+    const sum = provided || (t.input + t.output + t.cache_read + t.cache_creation);
+    const cost = Number.isFinite(entry.cost_usd) && entry.cost_usd >= 0 ? entry.cost_usd : 0;
 
     this.total.input += t.input;
     this.total.output += t.output;
