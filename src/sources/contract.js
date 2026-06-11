@@ -101,6 +101,23 @@ export const ACTION_TYPES = Object.freeze({
   STATE_TRANSITION: 'state_transition',
 });
 
+// v1.4.2 F-38 (P0 audit) — the three tool-INVOCATION action_types form one
+// security-equivalent family. WHICH surface a tool call came through
+// (provider built-in vs MCP server vs customer-wired custom tool) is an
+// adapter implementation detail, not a security distinction: all three are
+// "the agent invoked a tool." A deny/allowlist policy keyed on the generic
+// `tool_use` MUST catch all three, or it silently misses MCP + custom tool
+// calls — exactly where an attacker pivots. The policy matcher
+// (src/shield/policy.js) expands a generic `tool_use` target to this family;
+// matching a SPECIFIC member (mcp_tool_use / custom_tool_use) stays exact so
+// an operator can still target one surface when they mean to.
+// SignalsAggregator (src/anonymizer.js) uses the same set for IoC capture.
+export const TOOL_USE_FAMILY = Object.freeze([
+  ACTION_TYPES.TOOL_USE,
+  ACTION_TYPES.MCP_TOOL_USE,
+  ACTION_TYPES.CUSTOM_TOOL_USE,
+]);
+
 export const STATUS_VALUES = Object.freeze({
   OK: 'ok',
   ERROR: 'error',

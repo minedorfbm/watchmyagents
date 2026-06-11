@@ -24,6 +24,7 @@
 // Field paths use dotted notation (`input.url`, `output.content.text`).
 
 import { readFile } from 'node:fs/promises';
+import { TOOL_USE_FAMILY } from '../sources/contract.js';
 
 export async function loadPolicies(path) {
   const raw = await readFile(path, 'utf8');
@@ -247,9 +248,53 @@ export function matchesPolicy(event, policy, ctx = {}) {
     const value = field.startsWith('ctx.')
       ? getNested(ctx, field.slice(4))
       : getNested(event, field);
-    if (!matchValue(value, condition)) return false;
+    // v1.4.2 F-38 (P0 audit): the action_type field gets tool-family
+    // expansion so a rule keyed on the generic `tool_use` catches MCP +
+    // custom tool calls too. Every other field uses plain matchValue.
+    const matched = field === 'action_type'
+      ? matchActionType(value, condition)
+      : matchValue(value, condition);
+    if (!matched) return false;
   }
   return true;
+}
+
+// v1.4.2 F-38 (P0 audit) — action_type matching with tool-family expansion.
+//
+// Adapters emit three distinct tool-invocation action_types: `tool_use`
+// (provider built-ins), `mcp_tool_use` (MCP servers), `custom_tool_use`
+// (customer-wired tools). A policy that targets the GENERIC `tool_use` must
+// match all three — otherwise a deny/allowlist rule silently misses MCP and
+// custom tool calls (e.g. the Deep Researcher "only web_search/web_fetch,
+// deny everything else" containment rule had a hole exactly there). The OpenAI
+// adapter emits `custom_tool_use` for EVERY tool, so without this a
+// `tool_use`-keyed rule matched nothing on that runtime at all.
+//
+// Expansion is one-directional and conservative: only the generic `tool_use`
+// token expands to the family. A policy that names a SPECIFIC member
+// (`mcp_tool_use` / `custom_tool_use`) stays an exact match, so an operator
+// who deliberately wants to target one surface still can. Non-set conditions
+// on action_type (regex, numeric — unusual but legal) fall back to matchValue.
+function expandActionTypeTargets(target) {
+  return target === 'tool_use' ? TOOL_USE_FAMILY : [target];
+}
+
+function matchActionType(value, condition) {
+  if (condition === null || typeof condition !== 'object') {
+    return expandActionTypeTargets(condition).includes(value);
+  }
+  if (Array.isArray(condition)) {
+    return condition.flatMap(expandActionTypeTargets).includes(value);
+  }
+  if (condition.in !== undefined) {
+    return condition.in.flatMap(expandActionTypeTargets).includes(value);
+  }
+  if (condition.not_in !== undefined) {
+    return !condition.not_in.flatMap(expandActionTypeTargets).includes(value);
+  }
+  // regex / numeric / unknown shapes on action_type are unusual but legal —
+  // defer to the generic matcher (which fails-closed on unknown shapes).
+  return matchValue(value, condition);
 }
 
 // First-match-wins evaluation. Returns the policy decision and metadata.
