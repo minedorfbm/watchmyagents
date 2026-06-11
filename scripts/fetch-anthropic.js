@@ -567,7 +567,25 @@ async function main() {
     const intervalMs = parseDurationMs(args.interval, 60_000);
     // Discovery window for NEW sessions (default 7d, configurable). Sessions we
     // already track are re-fetched regardless of age, so long-lived ones don't drop.
-    const windowMs = parseDurationMs(args['discovery-since'], 7 * 24 * 3600_000);
+    let windowMs = parseDurationMs(args['discovery-since'], 7 * 24 * 3600_000);
+    // v1.4.2 F-46 (P1 audit): the discovery window must comfortably exceed the
+    // poll interval. Discovery runs once per cycle; a session that is created
+    // AND ends/ages-out between two sweeps is never added to the tracked set,
+    // so its events are never fetched (untraced activity). Requiring
+    // windowMs >= 2*intervalMs guarantees every session appears in at least
+    // two consecutive discovery sweeps before it can leave the window. The 7d
+    // default is far above this; the guard only bites when an operator sets
+    // --discovery-since too tight relative to --interval. Clamp + warn rather
+    // than silently honoring a value that opens a per-cycle blind window.
+    const minWindowMs = intervalMs * 2;
+    if (windowMs < minWindowMs) {
+      process.stderr.write(
+        `[wma] --discovery-since (${Math.round(windowMs / 1000)}s) is below 2x --interval ` +
+        `(${Math.round(intervalMs / 1000)}s) — a short-lived session could be missed between ` +
+        `sweeps. Clamping discovery window up to ${Math.round(minWindowMs / 1000)}s.\n`,
+      );
+      windowMs = minWindowMs;
+    }
     // display_name on the Fortress payload: defaults to the human agent name
     // (UX-friendly — operators identify agents by name in the dashboard). The
     // name is sanitized via cleanLabel() so log/payload injection is impossible.
