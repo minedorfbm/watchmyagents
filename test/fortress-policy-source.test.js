@@ -282,3 +282,76 @@ test('1.5.B FortressPolicySource constructor: explicit option wins over env var'
     delete process.env.WMA_REQUIRE_SIGNED_POLICIES;
   }
 });
+
+// ── F-48 (v1.4.2, P2 audit) — fail-closed when a refresh drops everything ──
+//
+// A successful refresh that SENT policies but compiled NONE (all dropped by
+// signature verification or compile validation) must NOT install the empty
+// { default: allow } ruleset — that silently disarms Shield. We drive
+// _refresh hermetically via the _fetchPolicies seam, in LAX mode so an
+// unsigned policy is kept by verification and we control drop-vs-keep purely
+// through compile validity (action good/bogus).
+
+class DriveFortress extends FortressPolicySource {
+  constructor(opts = {}) {
+    // lax mode → unsigned policies survive _verifyAndFilter; compile decides.
+    super({ apiKey: 'k', base: 'https://x', requireSignedPolicies: false, ...opts });
+    this._next = { policies: [], signing_keys: [], fetched_at: '2026-06-11T00:00:00Z' };
+  }
+  setNext(policies) { this._next = { ...this._next, policies }; }
+  async _fetchPolicies() { return this._next; }
+}
+
+const okPolicy = (id = 'r-ok') => ({ rule_id: id, name: id, match: { tool_name: 'bash' }, action: 'deny', priority: 100, mode: 'enforce' });
+const bogusPolicy = (id = 'r-bad') => ({ rule_id: id, name: id, match: { tool_name: 'bash' }, action: 'TOTALLY_BOGUS', priority: 100, mode: 'enforce' });
+
+test('F-48: all policies dropped + no prior ruleset → FAIL-CLOSED to deny-by-default', async () => {
+  const errors = [];
+  const src = new DriveFortress({ onError: (e) => errors.push(e) });
+  src.setNext([bogusPolicy()]);                 // server sent 1, it won't compile
+  await src._refresh({ initial: false });
+  assert.equal(src.current().default.action, 'deny', 'must NOT be allow-everything');
+  assert.equal(src.current().policies.length, 0);
+  assert.ok(errors.some((e) => /FAIL-CLOSED/.test(e.message)), 'a loud fail-closed error must fire');
+});
+
+test('F-48: a legitimately empty response (server sent 0) installs allow as intended', async () => {
+  const src = new DriveFortress();
+  src.setNext([]);                              // operator cleared all policies
+  await src._refresh({ initial: false });
+  assert.equal(src.current().default.action, 'allow', 'empty-by-design is not a drop → allow');
+  assert.equal(src.current().policies.length, 0);
+});
+
+test('F-48: all-dropped AFTER a good refresh → retains last-known-good ruleset', async () => {
+  const errors = [];
+  const src = new DriveFortress({ onError: (e) => errors.push(e) });
+  // 1) good refresh installs a compilable policy
+  src.setNext([okPolicy('r-keep')]);
+  await src._refresh({ initial: false });
+  assert.equal(src.current().policies.length, 1);
+  // 2) next refresh drops everything → must KEEP the prior policy, not wipe it
+  src.setNext([bogusPolicy()]);
+  await src._refresh({ initial: false });
+  assert.equal(src.current().policies.length, 1, 'last-known-good ruleset retained');
+  assert.equal(src.current().policies[0].id || src.current().policies[0].rule_id, 'r-keep');
+  assert.ok(errors.some((e) => /retaining last-known-good/i.test(e.message)));
+});
+
+test('F-48: WMA_SHIELD_FAIL_MODE=open opt-out preserves the pre-F-48 allow behavior', async () => {
+  const src = new DriveFortress({ failMode: 'open' });
+  src.setNext([bogusPolicy()]);
+  await src._refresh({ initial: false });
+  assert.equal(src.current().default.action, 'allow', 'fail-open opt-out installs allow');
+  assert.equal(src.current().policies.length, 0);
+});
+
+test('F-48: failMode defaults to closed; env=open flips it', () => {
+  assert.equal(new FortressPolicySource({ apiKey: 'k', base: 'https://x' }).failMode, 'closed');
+  process.env.WMA_SHIELD_FAIL_MODE = 'open';
+  try {
+    assert.equal(new FortressPolicySource({ apiKey: 'k', base: 'https://x' }).failMode, 'open');
+  } finally {
+    delete process.env.WMA_SHIELD_FAIL_MODE;
+  }
+});

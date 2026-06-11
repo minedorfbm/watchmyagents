@@ -167,6 +167,18 @@ function strictModeFromEnv() {
   return true;
 }
 
+// v1.4.2 F-48 (P2 audit) — what to do when a SUCCESSFUL refresh yields zero
+// usable policies even though Fortress SENT some (i.e. every policy was
+// dropped by signature verification or compile validation). 'closed' (the
+// default, the right stance for a security control) refuses to install an
+// empty allow-everything ruleset; 'open' preserves the pre-F-48 behavior
+// (install default-allow) as an explicit opt-out.
+function failModeFromEnv() {
+  const v = process.env.WMA_SHIELD_FAIL_MODE;
+  if (v === 'open') return 'open';
+  return 'closed';                   // unset / anything else → fail-closed
+}
+
 // Parse the embedded root pubkey ONCE at module load. If the file still
 // carries the placeholder, we DO NOT throw — but every refresh logs a
 // loud reminder so an unattended deploy can't silently trust a key whose
@@ -183,7 +195,7 @@ const ROOT_PUBLIC_KEY = (() => {
 })();
 
 export class FortressPolicySource {
-  constructor({ apiKey, base, anthropicAgentId, refreshIntervalMs = 5 * 60_000, onError, onRefresh, requireSignedPolicies }) {
+  constructor({ apiKey, base, anthropicAgentId, refreshIntervalMs = 5 * 60_000, onError, onRefresh, requireSignedPolicies, failMode }) {
     if (!apiKey) throw new Error('FortressPolicySource: apiKey required');
     if (!base) throw new Error('FortressPolicySource: base URL required');
     this.apiKey = apiKey;
@@ -196,12 +208,18 @@ export class FortressPolicySource {
     this.lastFetchedAt = null;
     this._timer = null;
     this._aborted = false;
+    // v1.4.2 F-48: tracks whether this.ruleset came from a non-degraded
+    // refresh (so a later all-dropped refresh can retain last-known-good
+    // instead of wiping it) vs. is still the constructor's default-allow.
+    this._installedFromRefresh = false;
     // v1.1.5: per-instance override of the env var. Tests use this to
     // exercise both modes without touching process.env. If neither the
     // constructor option nor the env var is set, strict mode wins.
     this.requireSignedPolicies = requireSignedPolicies != null
       ? !!requireSignedPolicies
       : strictModeFromEnv();
+    // v1.4.2 F-48: 'closed' (default) | 'open'. Per-instance override for tests.
+    this.failMode = failMode != null ? failMode : failModeFromEnv();
   }
 
   /** Initial fetch — fails loud if it can't reach Fortress at startup. */
@@ -232,14 +250,20 @@ export class FortressPolicySource {
     return this._refresh();
   }
 
+  // v1.4.2 F-48: injectable fetch seam (tests override this to drive _refresh
+  // hermetically). Production hits the real Fortress endpoint.
+  async _fetchPolicies() {
+    return fetchPolicies({
+      apiKey: this.apiKey,
+      base: this.base,
+      anthropicAgentId: this.anthropicAgentId,
+    });
+  }
+
   async _refresh({ initial = false } = {}) {
     if (this._aborted) return;
     try {
-      const { policies, signing_keys, fetched_at } = await fetchPolicies({
-        apiKey: this.apiKey,
-        base: this.base,
-        anthropicAgentId: this.anthropicAgentId,
-      });
+      const { policies, signing_keys, fetched_at } = await this._fetchPolicies();
 
       // v1.1.5 Phase 1.5 — verify the chain-of-trust BEFORE any other
       // processing. We must verify on the raw JSON shape sent by Fortress,
@@ -272,11 +296,47 @@ export class FortressPolicySource {
       // priorities) keep their relative order via the stable sort
       // guarantee in V8 — predictable behavior.
       compiled.sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0));
+
+      // v1.4.2 F-48 (P2 audit): FAIL-CLOSED on a "successful" refresh that
+      // dropped EVERYTHING. If Fortress SENT policies (policies.length > 0)
+      // but none survived verification/compile (compiled.length === 0), an
+      // on-path attacker or a broken signing pipeline has effectively
+      // disarmed Shield — installing the empty { default: allow } ruleset
+      // here would silently allow every action while the daemon looks
+      // healthy. We distinguish this from a LEGITIMATELY empty response
+      // (operator cleared all policies → policies.length === 0 → install
+      // allow as intended).
+      const allDropped = policies.length > 0 && compiled.length === 0;
+      if (allDropped && this.failMode === 'closed') {
+        this.lastFetchedAt = fetched_at;
+        if (this._installedFromRefresh) {
+          // We have a last-known-good ruleset → KEEP it; do not overwrite
+          // with allow-everything. Protection continues on the prior rules.
+          this.onError(new Error(
+            `Fortress refresh: all ${policies.length} policies failed verification/compile — ` +
+            'FAIL-CLOSED, retaining last-known-good ruleset (set WMA_SHIELD_FAIL_MODE=open to override).',
+          ));
+          this.onRefresh({ policies: this.ruleset.policies, fetched_at, initial, failClosed: true });
+        } else {
+          // No prior good ruleset (e.g. initial load) → cannot fall back to
+          // allow-everything for a security control. Install deny-by-default
+          // so unmatched actions are denied rather than waved through.
+          this.ruleset = { version: 1, policies: [], default: { action: 'deny' } };
+          this.onError(new Error(
+            `Fortress refresh: all ${policies.length} policies failed verification/compile and there is no ` +
+            'prior ruleset — FAIL-CLOSED to deny-by-default (set WMA_SHIELD_FAIL_MODE=open to override).',
+          ));
+          this.onRefresh({ policies: [], fetched_at, initial, failClosed: true });
+        }
+        return;
+      }
+
       this.ruleset = {
         version: 1,
         policies: compiled,
         default: { action: 'allow' },
       };
+      this._installedFromRefresh = true;
       this.lastFetchedAt = fetched_at;
       this.onRefresh({ policies: compiled, fetched_at, initial });
     } catch (e) {
