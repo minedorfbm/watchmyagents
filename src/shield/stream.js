@@ -177,15 +177,68 @@ function parseFrame(frame) {
   catch { return null; }
 }
 
+// v1.4.5 F-55 (P1 audit): bounded set of recently-yielded event ids. The
+// reconnect path can re-deliver events (backfill tail overlapping the resumed
+// live head, or an upstream redelivering after a drop). De-duplicating by id
+// makes the whole stream idempotent so Shield never double-enforces /
+// double-records the same event. Bounded so a long-lived stream can't grow it
+// without limit; ordered eviction drops the oldest ids first.
+export function makeSeenIdSet(cap = 4096) {
+  const set = new Set();
+  return {
+    seen(id) {
+      if (set.has(id)) return true;
+      set.add(id);
+      if (set.size > cap) {
+        // Evict oldest insertion-order ids down to ~90% of cap.
+        const target = Math.floor(cap * 0.9);
+        for (const old of set) {
+          set.delete(old);
+          if (set.size <= target) break;
+        }
+      }
+      return false;
+    },
+  };
+}
+
 // High-level wrapper: stream forever, reconnecting on transient errors.
 // Yields events; on fatal/permanent errors throws after maxAttempts.
-export async function* streamWithReconnect({ apiKey, sessionId, signal, maxAttempts = 5, onReconnect }) {
+//
+// v1.4.5 F-55 (P1 audit): SSE reconnect previously re-opened the stream at the
+// LIVE position with no resume cursor, so every event emitted during the drop
+// window was lost — including a `requires_action` (which pauses the agent
+// waiting on Shield) or the `agent.tool_use` that must be cached before it.
+// That was a silent enforcement blind window. Now, before resuming the live
+// stream after a drop, we BACKFILL the gap: page the persisted events endpoint
+// for everything after the last id we yielded, feed those through, then resume
+// live. Yielded ids are de-duplicated so the backfill/live overlap can't cause
+// double-processing.
+//
+// `backfill(afterId, signal)` — optional async-iterable factory the caller
+// injects (Shield passes one backed by fetchRawEvents with `afterId`). Kept as
+// an injected dependency so this module stays import-free of the Anthropic
+// source and remains unit-testable with a stub.
+export async function* streamWithReconnect({ apiKey, sessionId, signal, maxAttempts = 5, onReconnect, backfill, _openStream = openEventStream }) {
   let attempt = 0;
+  let lastEventId = null;
+  const dedup = makeSeenIdSet();
+
+  // Yield an event unless we've already emitted it; track the last id so a
+  // reconnect knows where to backfill from.
+  function shouldYield(ev) {
+    if (ev && ev.id != null) {
+      if (dedup.seen(ev.id)) return false;
+      lastEventId = ev.id;
+    }
+    return true;
+  }
+
   while (true) {
     try {
-      for await (const ev of openEventStream({ apiKey, sessionId, signal })) {
+      for await (const ev of _openStream({ apiKey, sessionId, signal })) {
         attempt = 0; // any event resets the backoff
-        yield ev;
+        if (shouldYield(ev)) yield ev;
       }
       // Stream ended without throwing — session likely closed cleanly. Exit.
       return;
@@ -198,6 +251,22 @@ export async function* streamWithReconnect({ apiKey, sessionId, signal, maxAttem
       const backoffMs = Math.min(30_000, 1000 * 2 ** (attempt - 1));
       if (onReconnect) onReconnect({ attempt, backoffMs, error: e });
       await new Promise(r => setTimeout(r, backoffMs));
+
+      // F-55: backfill the gap the live stream missed before reconnecting.
+      // Best-effort: a backfill failure must not abort enforcement — we log
+      // it and fall through to the live re-open, which will itself retry.
+      if (backfill && lastEventId && !signal?.aborted) {
+        try {
+          let backfilled = 0;
+          for await (const ev of backfill(lastEventId, signal)) {
+            if (signal?.aborted) return;
+            if (shouldYield(ev)) { backfilled++; yield ev; }
+          }
+          if (backfilled && onReconnect) onReconnect({ attempt, backfilled, afterId: lastEventId });
+        } catch (be) {
+          if (onReconnect) onReconnect({ attempt, backfillError: be });
+        }
+      }
     }
   }
 }

@@ -168,8 +168,12 @@ export async function listSessions(apiKey, { agentId, since, limit = 100, maxPag
 
 // Yields raw events in chronological order. Accepts an optional types filter
 // to reduce payload (server-side `types[]=...&types[]=...`).
-export async function* fetchRawEvents(apiKey, sessionId, { types } = {}) {
-  let after = null;
+export async function* fetchRawEvents(apiKey, sessionId, { types, afterId } = {}) {
+  // v1.4.5 F-55: `afterId` lets a caller page only events AFTER a known id
+  // (exclusive) — used by Shield's reconnect backfill to fetch exactly the
+  // gap that the live SSE stream missed during a drop, rather than re-walking
+  // the whole session.
+  let after = afterId || null;
   while (true) {
     const qs = new URLSearchParams({ limit: '1000' });
     if (after) qs.set('after_id', after);

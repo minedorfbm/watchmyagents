@@ -34,7 +34,7 @@ import {
 } from '../src/shield/enforce.js';
 import { maybePrintVersionAndExit } from '../src/version.js';
 import { DecisionLogger } from '../src/shield/decisions.js';
-import { listSessions, listAgents } from '../src/sources/anthropic-managed.js';
+import { listSessions, listAgents, fetchRawEvents } from '../src/sources/anthropic-managed.js';
 import { FortressPolicySource, postDecision } from '../src/shield/sources/fortress.js';
 import { resolveFortressBase, fortressEndpoint } from '../src/fortress/url.js';
 import { PolicyStream } from '../src/shield/policy-stream.js';
@@ -223,9 +223,21 @@ async function runSessionWorker({ sessionId, ctx }) {
   try {
     for await (const rawEvent of streamWithReconnect({
       apiKey, sessionId, signal, maxAttempts: 3,
-      onReconnect: ({ attempt, backoffMs, error }) => {
-        sinfo(sessionId, `reconnect attempt ${attempt}/3 in ${backoffMs}ms (${error.message})`);
+      onReconnect: ({ attempt, backoffMs, error, backfilled, afterId, backfillError }) => {
+        if (backfillError) {
+          swarn(sessionId, `reconnect backfill failed (continuing on live stream): ${backfillError.message}`);
+        } else if (backfilled) {
+          // F-55: surface that the gap was closed — these events would
+          // otherwise have been silently missed by enforcement.
+          sinfo(sessionId, `reconnect backfilled ${backfilled} missed event(s) after ${String(afterId).slice(0, 16)}…`);
+        } else {
+          sinfo(sessionId, `reconnect attempt ${attempt}/3 in ${backoffMs}ms (${error?.message ?? 'drop'})`);
+        }
       },
+      // F-55: close the enforcement blind window on reconnect — page the
+      // persisted events endpoint for everything the live stream missed
+      // during the drop, exclusive of the last id we already processed.
+      backfill: (afterId, sig) => fetchRawEvents(apiKey, sessionId, { afterId }),
     })) {
       processed++;
 
