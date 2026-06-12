@@ -265,6 +265,18 @@ export async function* transformRawEventsToWMAActions(rawEventsAsyncIterable, { 
   // distinct API-level IDs will populate parent_agent_id natively.
   const subThreadIds = new Set();
 
+  // v1.4.4 F-52 (P2 audit): only emit the end-of-stream "no_result_observed"
+  // flush when the session ACTUALLY terminated in this stream. In watch mode
+  // fetchRawEvents re-fetches the FULL session every cycle, so a tool whose
+  // start lands in cycle N but whose result lands in cycle N+1 would, with an
+  // unconditional flush, get a phantom no_result_observed row (id = start id)
+  // in cycle N AND the real paired row (id = result id) in cycle N+1 — a
+  // double-count + persistent phantom error skewing error_rate_by_tool. While
+  // the session is still running an unpaired start is in-flight, not
+  // "no result observed"; it stays pending and pairs (or flushes) once the
+  // session's terminal state is observed.
+  let sessionTerminated = false;
+
   // `provider` is the canonical field per src/sources/contract.js (no
   // other consumer ever read the previous `framework` field, so it was
   // dropped in PR-B with zero downstream impact).
@@ -632,6 +644,8 @@ export async function* transformRawEventsToWMAActions(rawEventsAsyncIterable, { 
       const prefix = isThread ? 'session.thread_status_' : 'session.status_';
       const state = type.slice(prefix.length); // 'running' | 'idle' | 'rescheduled' | 'terminated'
       const fatal = state === 'terminated';
+      // F-52: a SESSION-scope terminate (not a sub-thread one) gates the flush.
+      if (fatal && !isThread) sessionTerminated = true;
       yield {
         ...base,
         ...subAgentMeta,
@@ -666,6 +680,16 @@ export async function* transformRawEventsToWMAActions(rawEventsAsyncIterable, { 
   // explicitly with status='error' keeps the local NDJSON, anonymizer
   // signals (counts, IoC hashes, tool_counts), and Fortress decisions
   // honest about what actually happened.
+  //
+  // v1.4.4 F-52: GATED on sessionTerminated. If the session is still running
+  // (watch mode re-fetches the full session every cycle), an unpaired start is
+  // in-flight, not lost — flushing it now would create a phantom row that the
+  // next cycle's real paired row double-counts. We only flush once the
+  // session's terminal state proves the calls genuinely never resolved. (Both
+  // F-8 and F-50 flush tests feed a session.status_terminated event, so this
+  // gate is satisfied for them.)
+  if (!sessionTerminated) return;
+
   for (const [toolUseId, pending] of pendingToolUse) {
     yield {
       ...base,

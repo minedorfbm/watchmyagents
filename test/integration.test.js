@@ -314,9 +314,12 @@ test('integration F: a tool_use with no name field yields tool_name=null (F-41)'
       input: { command: 'rm -rf /' } },
     { type: 'agent.tool_result', id: 'noname1r', processed_at: '2026-06-01T12:00:01Z',
       tool_use_id: 'noname1', is_error: false, content: 'done' },
-    // Custom tool, also nameless.
+    // Custom tool, also nameless, never resolved — surfaces via the flush at
+    // session termination (F-52: the flush is gated on the terminal state).
     { type: 'agent.custom_tool_use', id: 'noname2', processed_at: '2026-06-01T12:00:02Z',
       input: { foo: 'bar' } },
+    { type: 'session.status_terminated', id: 'term', processed_at: '2026-06-01T12:00:05Z',
+      stop_reason: { type: 'session_ended' } },
   ];
 
   const actions = await drain(transformRawEventsToWMAActions(
@@ -434,4 +437,71 @@ test('integration G: an orphan custom_tool_result (no start) still emits, tool_n
   assert.ok(c, 'orphan result still emits an action (never drop)');
   assert.equal(c.tool_name, null);
   assert.equal(c.status, 'error');
+});
+
+// ── Test H — F-52: flush is gated on session termination (no double-count) ──
+
+test('integration H: an in-flight tool (no result, session NOT terminated) is NOT flushed (F-52)', async () => {
+  // This is the cross-cycle scenario: cycle N sees the start but no result and
+  // no terminal state. Pre-F-52 the flush emitted a phantom no_result_observed
+  // row here; cycle N+1 would then ALSO emit the real paired row → double-count.
+  const cycleN = [
+    { type: 'agent.tool_use', id: 't1', processed_at: '2026-06-01T12:00:00Z',
+      name: 'web_fetch', input: { url: 'https://x' } },
+    { type: 'agent.custom_tool_use', id: 'c1', processed_at: '2026-06-01T12:00:01Z',
+      name: 'send', input: {} },
+    // session still running — a non-terminal status update, not a terminate.
+    { type: 'session.status_idle', id: 'idle', processed_at: '2026-06-01T12:00:02Z' },
+  ];
+  const actions = await drain(transformRawEventsToWMAActions(
+    asyncIter(cycleN), { agentId: AGENT_ID, sessionId: SESSION_ID },
+  ));
+  assert.equal(actions.filter((a) => a.error === 'no_result_observed').length, 0,
+    'no phantom no_result_observed while the session is still running');
+  assert.equal(actions.filter((a) => a.action_type === 'tool_use').length, 0,
+    'the in-flight tool_use is not emitted yet (will pair next cycle)');
+  assert.equal(actions.filter((a) => a.action_type === 'custom_tool_use').length, 0,
+    'the in-flight custom tool is not emitted yet either');
+});
+
+test('integration H: the SAME tool resolved next cycle yields exactly ONE row (no double-count) (F-52)', async () => {
+  // Cycle N+1: the full session is re-fetched (start present again) and now the
+  // result has arrived. We must get ONE paired row per tool, not a phantom +
+  // a real one.
+  const cycleNplus1 = [
+    { type: 'agent.tool_use', id: 't1', processed_at: '2026-06-01T12:00:00Z',
+      name: 'web_fetch', input: { url: 'https://x' } },
+    { type: 'agent.tool_result', id: 't1r', processed_at: '2026-06-01T12:00:03Z',
+      tool_use_id: 't1', is_error: false, content: 'ok' },
+    { type: 'agent.custom_tool_use', id: 'c1', processed_at: '2026-06-01T12:00:01Z',
+      name: 'send', input: {} },
+    { type: 'user.custom_tool_result', id: 'c1r', processed_at: '2026-06-01T12:00:04Z',
+      custom_tool_use_id: 'c1', is_error: false, content: 'sent' },
+  ];
+  const actions = await drain(transformRawEventsToWMAActions(
+    asyncIter(cycleNplus1), { agentId: AGENT_ID, sessionId: SESSION_ID },
+  ));
+  assert.equal(actions.filter((a) => a.action_type === 'tool_use').length, 1,
+    'exactly one tool_use row');
+  assert.equal(actions.filter((a) => a.action_type === 'custom_tool_use').length, 1,
+    'exactly one custom_tool_use row');
+  assert.equal(actions.filter((a) => a.error === 'no_result_observed').length, 0,
+    'no phantom error survived');
+});
+
+test('integration H: a genuinely blocked tool DOES flush once the session terminates (F-52)', async () => {
+  // The flush still does its job — at session end, an unresolved start is
+  // surfaced as no_result_observed (the blocked-exfil signal).
+  const events = [
+    { type: 'agent.tool_use', id: 't9', processed_at: '2026-06-01T12:00:00Z',
+      name: 'bash', input: { command: 'curl evil' } },
+    { type: 'session.status_terminated', id: 'term', processed_at: '2026-06-01T12:00:05Z',
+      stop_reason: { type: 'blocked' } },
+  ];
+  const actions = await drain(transformRawEventsToWMAActions(
+    asyncIter(events), { agentId: AGENT_ID, sessionId: SESSION_ID },
+  ));
+  const flushed = actions.find((a) => a.action_type === 'tool_use' && a.id === 't9');
+  assert.ok(flushed, 'blocked tool must surface at session termination');
+  assert.equal(flushed.error, 'no_result_observed');
 });
