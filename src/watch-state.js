@@ -24,6 +24,15 @@ export class SeenTracker {
     this._bySession = new Map();   // sessionId -> Set<eventId>
   }
 
+  // v1.4.4 F-53: fold an agent's on-disk history into the static preloaded
+  // set. Called lazily the first time an agent is seen (including agents that
+  // --all-agents discovers AFTER startup) so their already-captured NDJSON ids
+  // are deduped against — otherwise a late-appearing agent with existing logs
+  // would re-append and re-upload events it already has.
+  addPreloaded(id) {
+    if (id) this._preloaded.add(id);
+  }
+
   has(sessionId, eventId) {
     if (this._preloaded.has(eventId)) return true;
     const s = this._bySession.get(sessionId);

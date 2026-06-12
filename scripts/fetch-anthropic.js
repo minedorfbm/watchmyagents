@@ -383,17 +383,25 @@ async function runWatch({ apiKey, resolveAgents, fleet, logDir, intervalMs, wind
   let agents = await resolveAgents();
   // v1.4.3 F-51: bounded dedup. Preloaded on-disk ids are static; runtime ids
   // are tracked per-session and dropped on terminate (see src/watch-state.js).
-  const preloaded = [];
-  for (const ag of agents) {
-    for (const id of await preloadSeenIds(logDir, ag.agentId)) preloaded.push(id);
+  const seen = new SeenTracker();
+  // v1.4.4 F-53: preload each agent's on-disk history the FIRST time we see it
+  // — including agents that --all-agents discovers after startup. Pre-fix the
+  // preload ran once for the initial fleet only, so a late-appearing agent with
+  // existing logs re-appended + re-uploaded already-captured events.
+  const preloadedAgents = new Set();
+  async function ensurePreloaded(agentId) {
+    if (preloadedAgents.has(agentId)) return;
+    preloadedAgents.add(agentId);
+    for (const id of await preloadSeenIds(logDir, agentId)) seen.addPreloaded(id);
   }
-  const seen = new SeenTracker(preloaded);
+  for (const ag of agents) await ensurePreloaded(ag.agentId);
   const loggers = new Map();     // sessionId → Logger (session ids are globally unique)
-  const ended = new Set();       // terminated sessions (skip). Grows one id per
-                                  // terminated session over the daemon's life —
-                                  // bounded by session COUNT (ids only, the
-                                  // smallest term); the per-EVENT growth that
-                                  // actually drove OOM is fixed via SeenTracker.
+  // terminated sessions (skip). v1.4.4 F-54: a Map<sid → terminatedAtMs> so we
+  // can TTL-prune. A session terminated more than windowMs ago has created_at
+  // older still, so listSessions (which filters created_at < since, since =
+  // now - windowMs) can no longer return it — its id is then safe to forget,
+  // bounding this map's growth on a long daemon with many short sessions.
+  const ended = new Map();
   const sessionAgent = new Map();// sessionId → { agentId, model, displayName }
   const priors = new Map();      // agentId → previous classification (threads the
                                   // typology state machine across upload cycles)
@@ -413,9 +421,20 @@ async function runWatch({ apiKey, resolveAgents, fleet, logDir, intervalMs, wind
     if (fleet) { const next = await resolveAgents(); if (next.length) agents = next; }
     const since = new Date(Date.now() - windowMs);
 
+    // F-54: forget sessions terminated longer ago than the discovery window —
+    // listSessions can no longer surface them (created_at < since), so their
+    // skip-marker is no longer needed. Bounds `ended` on a long-running daemon.
+    const ttlCutoff = Date.now() - windowMs;
+    for (const [sid, terminatedAt] of ended) {
+      if (terminatedAt < ttlCutoff) ended.delete(sid);
+    }
+
     // (1) Discover sessions in the window; register the owning agent for each.
     for (const ag of agents) {
       if (ac.signal.aborted) break;
+      // F-53: a late-discovered agent (fleet mode) gets its disk history
+      // preloaded before we fetch any of its sessions, so dedup holds.
+      await ensurePreloaded(ag.agentId);
       const tag = fleet ? `[${ag.displayName}] ` : '';
       let sessions = [];
       try { sessions = await listSessions(apiKey, { agentId: ag.agentId, since }); }
@@ -507,7 +526,7 @@ async function runWatch({ apiKey, resolveAgents, fleet, logDir, intervalMs, wind
           session_tokens: { input: stats.input, output: stats.output, cache_read: stats.cache_read, cache_creation: stats.cache_creation, total: stats.sum },
           session_cost_usd: stats.cost_usd || null,
         });
-        ended.add(sid);
+        ended.set(sid, Date.now());
         // v1.4.3 F-51: bound memory — terminated sessions aren't re-fetched,
         // so drop their per-session dedup set AND their Logger object (the
         // latter was never deleted pre-fix → unbounded growth of Logger

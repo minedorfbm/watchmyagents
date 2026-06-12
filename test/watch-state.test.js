@@ -53,6 +53,30 @@ test('F-51: size reflects preloaded + all live per-session sets', () => {
   assert.equal(t.size, 3);
 });
 
+test('F-53: addPreloaded folds late-agent disk ids into the static set', () => {
+  // A fleet daemon discovers an agent AFTER startup; its on-disk history must
+  // be dedupable against so it doesn't re-append already-captured events.
+  const t = new SeenTracker(['boot1']);
+  assert.equal(t.has('sLate', 'disk1'), false, 'late agent id not yet known');
+  t.addPreloaded('disk1');
+  t.addPreloaded('disk2');
+  assert.equal(t.has('sLate', 'disk1'), true, 'preloaded id now deduped for any session');
+  assert.equal(t.has('other', 'disk2'), true);
+  // Preloaded ids are static — surviving forgetSession.
+  t.add('sLate', 'rt1');
+  t.forgetSession('sLate');
+  assert.equal(t.has('any', 'disk1'), true, 'late-preloaded id is static like the constructor set');
+  assert.equal(t.has('sLate', 'rt1'), false, 'but the session runtime id was dropped');
+});
+
+test('F-53: addPreloaded ignores falsy ids', () => {
+  const t = new SeenTracker();
+  t.addPreloaded(undefined);
+  t.addPreloaded('');
+  t.addPreloaded(null);
+  assert.equal(t.size, 0, 'no junk ids added');
+});
+
 test('F-51: equivalence with a global set for the membership test', () => {
   // For globally-unique ids (one event → one session), SeenTracker membership
   // must match a naive global Set across a realistic add sequence.
