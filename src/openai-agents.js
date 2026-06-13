@@ -40,7 +40,7 @@ import {
   attachWmaWatchToAgent,
   adapterMeta,
 } from './sources/openai-agents-js.js';
-import { FortressPolicySource } from './shield/sources/fortress.js';
+import { FortressPolicySource, postDecision } from './shield/sources/fortress.js';
 import { resolveFortressBase } from './fortress/url.js';
 
 /**
@@ -101,6 +101,7 @@ export function openaiAgents(options = {}) {
   // wma-shield gets its ruleset for Anthropic. Requires an agentId to scope
   // the pull, a base URL (option or WMA_FORTRESS_BASE_URL), and WMA_API_KEY.
   let fortressPolicySource = null;
+  let fortressDecisionSink = null;
   if (options.policies && options.policies.source === 'fortress') {
     if (!options.agentId) {
       throw new Error(
@@ -132,6 +133,14 @@ export function openaiAgents(options = {}) {
       requireSignedPolicies: options.policies.requireSignedPolicies,
       failMode: options.policies.failMode,
     });
+
+    // v1.4.7 (#1): ship decisions to the SAME Fortress (the control plane you
+    // pull policies from is where the decisions belong). Auto-on; opt out with
+    // policies.uploadDecisions === false to keep decisions local-only. The
+    // guardrail fires these best-effort, off its hot path.
+    if (options.policies.uploadDecisions !== false) {
+      fortressDecisionSink = (decision) => postDecision({ apiKey, base, decision });
+    }
   }
 
   // v1.4 Codex #2 — fail-loud refusal to start in enforce mode without
@@ -153,6 +162,8 @@ export function openaiAgents(options = {}) {
   const sharedOptions = {
     agentId:         options.agentId,            // v1.4.6: NDJSON path + native_agent_id
     fortressPolicySource,                        // v1.4.6: live Fortress ruleset (or null)
+    fortressDecisionSink,                        // v1.4.7 #1: ship decisions (or null)
+    signalsSalt:     options.signalsSalt || process.env.WMA_SIGNALS_SALT,  // hash session/input
     policiesPath:    options.policiesPath,
     ruleset:         options.ruleset,
     logDir:          options.logDir,

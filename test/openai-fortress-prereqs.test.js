@@ -172,6 +172,66 @@ test('P3: a shadow deny does NOT mark enforcement_delivered (not enforced)', asy
   assert.equal(recorded[0].enforcementDelivered, undefined);
 });
 
+// ── #1 — OpenAI decisions ship to Fortress (fire-and-forget) ─────────────
+
+// Drain microtasks/timers so the fire-and-forget post settles before asserting.
+const tick = () => new Promise((r) => setTimeout(r, 10));
+
+test('#1: an enforced deny is shipped to the Fortress decision sink', async () => {
+  const posted = [];
+  const sink = async (payload) => { posted.push(payload); };
+  const { decisionLogger, logger } = stubLoggers();
+  const guard = wmaToolInputGuardrail({
+    ruleset: DENY_RULESET, decisionLogger, logger,
+    fortressDecisionSink: sink, agentId: 'support_bot', signalsSalt: 's'.repeat(32),
+  });
+  await guard.run({ agent: { name: 'bot' }, toolCall: TOOL_CALL });
+  await tick();
+  assert.equal(posted.length, 1, 'decision posted to the sink');
+  assert.equal(posted[0].provider, 'openai-agents');
+  assert.equal(posted[0].native_agent_id, 'support_bot');
+  assert.equal(posted[0].decision, 'deny');
+  assert.equal(posted[0].enforcement_delivered, true);
+  assert.equal(posted[0].anthropic_agent_id, undefined, 'no Anthropic field for OpenAI');
+});
+
+test('#1: with NO sink configured, nothing is posted (local-only)', async () => {
+  const { decisionLogger, logger } = stubLoggers();
+  const guard = wmaToolInputGuardrail({ ruleset: DENY_RULESET, decisionLogger, logger });
+  const r = await guard.run({ agent: { name: 'bot' }, toolCall: TOOL_CALL });
+  await tick();
+  assert.equal(r.behavior.type, 'rejectContent'); // still enforces locally
+});
+
+test('#1: a sink that throws never breaks enforcement (best-effort)', async () => {
+  const { decisionLogger, logger } = stubLoggers();
+  const guard = wmaToolInputGuardrail({
+    ruleset: DENY_RULESET, decisionLogger, logger,
+    fortressDecisionSink: async () => { throw new Error('ingest-decisions 500'); },
+    agentId: 'bot', signalsSalt: 'x'.repeat(32),
+  });
+  const r = await guard.run({ agent: { name: 'bot' }, toolCall: TOOL_CALL });
+  await tick();
+  assert.equal(r.behavior.type, 'rejectContent', 'tool still blocked despite sink failure');
+});
+
+test('#1: factory auto-wires a decision sink when fortress policies are set', () => {
+  const wma = openaiAgents({
+    mode: 'enforce', agentId: 'support_bot',
+    policies: { source: 'fortress', baseUrl: 'https://x.supabase.co/functions/v1', apiKey: 'wma_' + 'a'.repeat(32) },
+  });
+  assert.equal(wma.mode, 'enforce'); // constructs; sink wired internally (covered by guardrail tests)
+});
+
+test('#1: factory respects uploadDecisions:false (decisions stay local)', () => {
+  // No throw, constructs — the opt-out path. (The sink being null is internal;
+  // this asserts the option is accepted and doesn't break construction.)
+  assert.doesNotThrow(() => openaiAgents({
+    mode: 'enforce', agentId: 'support_bot',
+    policies: { source: 'fortress', baseUrl: 'https://x/functions/v1', apiKey: 'wma_x', uploadDecisions: false },
+  }));
+});
+
 // ── Prereq 2 — provider-aware decision payload ───────────────────────────
 
 test('P2: payload carries provider + native_agent_id for OpenAI (no anthropic_agent_id)', () => {

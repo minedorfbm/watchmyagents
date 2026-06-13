@@ -54,6 +54,7 @@ import {
 import { evaluate, loadPolicies } from '../shield/policy.js';
 import { createContextTracker } from '../shield/context.js';
 import { DecisionLogger } from '../shield/decisions.js';
+import { buildFortressDecisionPayload } from '../shield/upload.js';
 import { Logger } from '../logger.js';
 import { normalizeToolInput } from '../anonymizer.js';
 
@@ -631,6 +632,33 @@ export function wmaToolInputGuardrail(options = {}) {
           mode: result.mode,
           enforcementDelivered: enforcedBlock ? true : undefined,
         });
+
+        // 4b. v1.4.7 (#1): ship the decision to Fortress's ingest-decisions when
+        // a sink is configured. FIRE-AND-FORGET, off the guardrail's hot path —
+        // identical model to the Anthropic shield's fireToFortress(). The NDJSON
+        // row above is the durable local record; this live post is best-effort
+        // (a failure is swallowed, never blocks the tool call or crashes the
+        // guardrail). Payload is anonymized (hashes + decision/rule/provider) so
+        // Containment holds. Carries provider='openai-agents' + native_agent_id +
+        // enforcement_delivered (the v1.4.6 prereqs) so Fortress attributes it
+        // to the right runtime and surfaces degraded enforcement.
+        if (options.fortressDecisionSink) {
+          try {
+            const payload = buildFortressDecisionPayload({
+              agentId: loggerAgentId,
+              provider: PROVIDER,
+              nativeAgentId: loggerAgentId,
+              sessionId,
+              rawEvent: event,
+              normalized: event,
+              result,
+              decidedInMs,
+              signalsSalt: options.signalsSalt,
+              enforcementDelivered: enforcedBlock ? true : undefined,
+            });
+            Promise.resolve(options.fortressDecisionSink(payload)).catch(() => undefined);
+          } catch { /* payload build must never break enforcement */ }
+        }
 
         // 5. Watch log (the event itself, separate from the decision).
         await logger.write(event);
