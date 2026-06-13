@@ -40,11 +40,24 @@ import {
   attachWmaWatchToAgent,
   adapterMeta,
 } from './sources/openai-agents-js.js';
+import { FortressPolicySource } from './shield/sources/fortress.js';
+import { resolveFortressBase } from './fortress/url.js';
 
 /**
  * Build the WMA OpenAI Agents SDK adapter from a single shared config.
  *
  * @param {object} [options]
+ * @param {string} [options.agentId]           v1.4.6 — the agent id registered
+ *                                             in Fortress. Used as the NDJSON
+ *                                             path segment + native_agent_id,
+ *                                             and to scope the Fortress policy
+ *                                             pull. Required with
+ *                                             policies.source='fortress'.
+ * @param {object} [options.policies]          v1.4.6 — live policy source.
+ *   `{ source: 'fortress', baseUrl?, apiKey?, requireSignedPolicies?, failMode? }`
+ *   pulls the ruleset from Fortress (apiKey defaults to WMA_API_KEY, baseUrl to
+ *   WMA_FORTRESS_BASE_URL) and refreshes it in the background — the same control
+ *   plane wma-shield uses for Anthropic.
  * @param {string} [options.policiesPath]      Local JSON policy file.
  * @param {object} [options.ruleset]           In-memory ruleset.
  * @param {string} [options.logDir]            NDJSON log dir.
@@ -82,22 +95,64 @@ export function openaiAgents(options = {}) {
     );
   }
 
+  // v1.4.6 — Fortress live policy source (the OpenAI register flow). When
+  // `policies: { source: 'fortress' }` is set, build a FortressPolicySource
+  // that the guardrail pulls from (+ background refresh), mirroring how
+  // wma-shield gets its ruleset for Anthropic. Requires an agentId to scope
+  // the pull, a base URL (option or WMA_FORTRESS_BASE_URL), and WMA_API_KEY.
+  let fortressPolicySource = null;
+  if (options.policies && options.policies.source === 'fortress') {
+    if (!options.agentId) {
+      throw new Error(
+        "openaiAgents({ policies: { source: 'fortress' } }) requires `agentId` " +
+        "(the agent id you registered in Fortress) to scope the policy pull.",
+      );
+    }
+    const apiKey = options.policies.apiKey || process.env.WMA_API_KEY;
+    if (!apiKey) {
+      throw new Error(
+        "openaiAgents fortress policies: WMA_API_KEY is required (env or " +
+        "policies.apiKey) to authenticate the policy pull.",
+      );
+    }
+    const base = resolveFortressBase({
+      explicitBase: options.policies.baseUrl,
+      env: process.env,
+    });
+    if (!base) {
+      throw new Error(
+        "openaiAgents fortress policies: no base URL — set policies.baseUrl or " +
+        "WMA_FORTRESS_BASE_URL (e.g. https://<project>.supabase.co/functions/v1).",
+      );
+    }
+    fortressPolicySource = new FortressPolicySource({
+      apiKey,
+      base,
+      anthropicAgentId: options.agentId,   // scopes get-policies by native agent id
+      requireSignedPolicies: options.policies.requireSignedPolicies,
+      failMode: options.policies.failMode,
+    });
+  }
+
   // v1.4 Codex #2 — fail-loud refusal to start in enforce mode without
   // any policy source. Avoids the v1.3.0 footgun where missing policies
   // silently degraded to "allow all" with only a stderr warning. The
   // failure surfaces at config time (not on the first request) so it's
   // impossible to deploy a build that LOOKS armed but isn't.
-  if (mode === 'enforce' && options.policiesPath == null && options.ruleset == null) {
+  if (mode === 'enforce' && options.policiesPath == null && options.ruleset == null
+      && fortressPolicySource == null) {
     throw new Error(
-      "openaiAgents({ mode: 'enforce' }) requires policiesPath or ruleset. " +
-      "Either provide one, or switch to { mode: 'observe' } if you only " +
-      "want Watch (NDJSON capture) without Shield enforcement.",
+      "openaiAgents({ mode: 'enforce' }) requires policiesPath, ruleset, or " +
+      "policies: { source: 'fortress' }. Either provide one, or switch to " +
+      "{ mode: 'observe' } if you only want Watch (NDJSON capture) without Shield.",
     );
   }
 
   // Shared config we thread into both shield() and watch() so the
   // customer doesn't have to repeat it.
   const sharedOptions = {
+    agentId:         options.agentId,            // v1.4.6: NDJSON path + native_agent_id
+    fortressPolicySource,                        // v1.4.6: live Fortress ruleset (or null)
     policiesPath:    options.policiesPath,
     ruleset:         options.ruleset,
     logDir:          options.logDir,

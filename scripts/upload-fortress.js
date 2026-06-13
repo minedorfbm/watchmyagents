@@ -139,6 +139,14 @@ async function main() {
   const args = parseArgs(process.argv.slice(2));
 
   const agentId = args['agent-id'];
+  // v1.4.6: provider-aware upload (Fortress OpenAI register flow). Default
+  // anthropic-managed for back-compat; pass --provider openai-agents (or
+  // WMA_PROVIDER) when uploading an OpenAI agent's local NDJSON.
+  const VALID_PROVIDERS = ['anthropic-managed', 'openai-agents'];
+  const provider = args.provider || process.env.WMA_PROVIDER || 'anthropic-managed';
+  if (!VALID_PROVIDERS.includes(provider)) {
+    die(`error: --provider must be one of ${VALID_PROVIDERS.join(', ')} (got "${provider}")`);
+  }
   const logDir = resolve(args['log-dir'] || './watchmyagents-logs');
   const apiKey = args['api-key'] || process.env.WMA_API_KEY;
   const salt = args.salt || process.env.WMA_SIGNALS_SALT;
@@ -160,11 +168,18 @@ async function main() {
   const fortressUrl = fortressBase ? fortressEndpoint(fortressBase, 'ingest-signals') : null;
 
   // Validation
-  if (!agentId) die('error: --agent-id required (Anthropic agent_id, e.g. agent_01ABC...)');
-  // Strict alphanumeric to prevent path traversal in collectFiles below
-  // (--agent-id ends up as a filesystem path segment).
-  if (!/^agent_[a-zA-Z0-9]+$/.test(agentId)) {
-    die(`error: --agent-id has invalid format (expected "agent_" + alphanumeric, got "${agentId}")`);
+  if (!agentId) die('error: --agent-id required (e.g. agent_01ABC... for Anthropic, or your agent name for OpenAI)');
+  // --agent-id ends up as a filesystem path segment → must be traversal-safe.
+  // Anthropic native ids are `agent_…`; other providers (OpenAI) use arbitrary
+  // but filesystem-safe agent names.
+  if (provider === 'anthropic-managed') {
+    if (!/^agent_[a-zA-Z0-9]+$/.test(agentId)) {
+      die(`error: --agent-id has invalid format for anthropic-managed (expected "agent_" + alphanumeric, got "${agentId}")`);
+    }
+  } else if (!/^[A-Za-z0-9._-]+$/.test(agentId) || agentId.includes('..')) {
+    // reject ".." explicitly: it passes the charset but is a path-traversal
+    // segment (agentId becomes a directory under logDir in collectFiles).
+    die(`error: --agent-id has unsafe characters or path traversal (allowed: letters, digits, . _ - ; no "..", got "${agentId}")`);
   }
   if (!dryRun && !fortressUrl) {
     die('error: --fortress-url or WMA_FORTRESS_URL required (full URL to /functions/v1/ingest-signals).\n' +
@@ -231,12 +246,15 @@ async function main() {
   // call. Best-effort: send the max; the daemon's subsequent uploads
   // will correct the value once it resolves.
   const body = {
-    provider: AnthropicManagedSource.providerName,
+    provider,
     native_agent_id: agentId,
-    anthropic_agent_id: agentId,
+    // legacy field only meaningful for the Anthropic runtime
+    anthropic_agent_id: provider === 'anthropic-managed' ? agentId : undefined,
     parent_agent_id: null,
     composition_pattern: 'solo',
-    enforcement_mode: AnthropicManagedSource.enforcementMode,
+    // enforcement_mode is an Anthropic confirm-vs-interrupt concept; don't
+    // send a misleading Anthropic value for other runtimes (Fortress defaults).
+    enforcement_mode: provider === 'anthropic-managed' ? AnthropicManagedSource.enforcementMode : undefined,
     display_name: displayName,
     window_start: signals.window_start,
     window_end: signals.window_end,

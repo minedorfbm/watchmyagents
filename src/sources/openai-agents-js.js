@@ -478,12 +478,13 @@ export function wmaToolInputGuardrail(options = {}) {
   const hasPolicySource =
     options.policiesPath != null ||
     options.ruleset != null ||
+    options.fortressPolicySource != null ||   // v1.4.6: live Fortress source
     options.allowAllWhenUnconfigured === true;
   if (!hasPolicySource) {
     throw new Error(
-      'wmaToolInputGuardrail: no policy configured. Pass policiesPath or ruleset. ' +
-      'For demos / smoke tests that intentionally allow all tool calls, pass ' +
-      '{ allowAllWhenUnconfigured: true } explicitly.',
+      'wmaToolInputGuardrail: no policy configured. Pass policiesPath, ruleset, or ' +
+      'fortressPolicySource. For demos / smoke tests that intentionally allow all ' +
+      'tool calls, pass { allowAllWhenUnconfigured: true } explicitly.',
     );
   }
 
@@ -502,10 +503,16 @@ export function wmaToolInputGuardrail(options = {}) {
   // mis-attributed to 'anthropic-managed' (DecisionLogger's pre-v1.3.1
   // hardcoded default). Fortress / Guardian forensic surfaces depend on
   // this for correct multi-provider attribution.
+  // v1.4.6: when the customer registers a named agent (Fortress OpenAI flow),
+  // use that id for the NDJSON path + as the native_agent_id, instead of the
+  // generic 'openai-agents'. Falls back to 'openai-agents' for the un-named
+  // single-agent case (backward compatible). assertSafePathSegment in the
+  // Logger validates it as a path segment (fails loud on an unsafe name).
+  const loggerAgentId = options.agentId || 'openai-agents';
   const decisionLogger = options.decisionLogger
-    || new DecisionLogger({ logDir, agentId: 'openai-agents', sessionId, provider: PROVIDER });
+    || new DecisionLogger({ logDir, agentId: loggerAgentId, sessionId, provider: PROVIDER });
   const logger = options.logger
-    || new Logger({ logDir, agentId: 'openai-agents', sessionId, silent: true, bestEffort: false });
+    || new Logger({ logDir, agentId: loggerAgentId, sessionId, silent: true, bestEffort: false });
 
   // Team tracker — re-used for the entire run of this guardrail.
   const envTeamId = teamIdFromEnv();
@@ -516,7 +523,26 @@ export function wmaToolInputGuardrail(options = {}) {
     : () => teamTracker.bootstrap(sessionId);
 
   // Lazily load the ruleset on first invocation if a path was given.
+  // v1.4.6: SINGLE-FLIGHT start. start() creates a setInterval, so two
+  // concurrent first tool-calls must NOT both call it (that leaks a second
+  // timer the source can't clear + double-fetches). They share one promise;
+  // on failure we reset it so the next call retries (and that call fails
+  // CLOSED via the guardrail's try/catch in the meantime).
+  let fortressStartPromise = null;
   async function ensureRuleset() {
+    // v1.4.6: live Fortress policy source — pull on first call + background
+    // refresh (the source owns a setInterval; its timer is unref'd so it can't
+    // keep the process alive). On initial-fetch failure start() throws, which
+    // propagates to the guardrail's try/catch → that tool call fails CLOSED
+    // (default) and we retry start() next call rather than caching a failure.
+    if (options.fortressPolicySource) {
+      if (!fortressStartPromise) {
+        fortressStartPromise = Promise.resolve(options.fortressPolicySource.start())
+          .catch((e) => { fortressStartPromise = null; throw e; });
+      }
+      await fortressStartPromise;
+      return options.fortressPolicySource.current();
+    }
     if (ruleset != null) return ruleset;
     if (options.policiesPath) {
       ruleset = await loadPolicies(options.policiesPath);
@@ -588,6 +614,13 @@ export function wmaToolInputGuardrail(options = {}) {
         const decidedInMs = Date.now() - t0;
 
         // 4. Audit-grade log (chain-signed).
+        // v1.4.6: the in-process guardrail delivers a block SYNCHRONOUSLY by
+        // returning rejectContent/throwException below — there is no separate
+        // enforcement API call that can fail (unlike Anthropic's async
+        // interrupt). So an enforced deny/interrupt IS delivered: record it as
+        // such. undefined when not applicable (allow / shadow).
+        const enforcedBlock = result.mode !== 'shadow'
+          && (result.decision === 'deny' || result.decision === 'interrupt');
         await decisionLogger.record({
           sourceEvent: { id: event.id, type: event.action_type, tool_name: event.tool_name, input: event.input },
           decision: result.decision,
@@ -596,6 +629,7 @@ export function wmaToolInputGuardrail(options = {}) {
           message: result.message,
           decidedInMs,
           mode: result.mode,
+          enforcementDelivered: enforcedBlock ? true : undefined,
         });
 
         // 5. Watch log (the event itself, separate from the decision).

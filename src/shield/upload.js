@@ -63,6 +63,14 @@ export function buildFortressDecisionPayload({
   // enforcement instead of trusting the computed verdict. Boolean only; no
   // raw content, so Containment is unaffected.
   enforcementDelivered,
+  // v1.4.6 (SDK prereq for the Fortress OpenAI register flow): provider +
+  // native_agent_id so Fortress's ingest-decisions attributes the decision to
+  // the right runtime. Defaults preserve the legacy Anthropic shape
+  // (provider='anthropic-managed', anthropic_agent_id=agentId) so existing
+  // callers (wma-shield) are unchanged. ingest-decisions keys on
+  // (provider, native_agent_id) with a fallback to anthropic_agent_id.
+  provider,
+  nativeAgentId,
 }) {
   // F-19: vendor built-ins survive even without a salt (allowlist short-circuit);
   // custom tool names throw without a salt — we catch and drop the field.
@@ -76,8 +84,13 @@ export function buildFortressDecisionPayload({
     }
   }
 
+  const effectiveProvider = provider || 'anthropic-managed';
   return {
-    anthropic_agent_id: agentId,
+    provider: effectiveProvider,
+    native_agent_id: nativeAgentId || agentId,
+    // Keep the legacy field only for the Anthropic runtime (an OpenAI agent id
+    // is not an `agent_…` value and the field is meaningless there).
+    anthropic_agent_id: effectiveProvider === 'anthropic-managed' ? agentId : undefined,
     decision: result.decision,
     rule_id: result.rule_id || undefined,
     session_hash: hashWithSaltOpt(sessionId, signalsSalt) || undefined,

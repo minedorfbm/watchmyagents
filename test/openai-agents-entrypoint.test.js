@@ -27,7 +27,7 @@ const NOOP_RULESET = { policies: [], default: { action: 'allow' } };
 test('openaiAgents: enforce mode requires a policy source', () => {
   assert.throws(
     () => openaiAgents({ mode: 'enforce' }),
-    /requires policiesPath or ruleset/,
+    /requires policiesPath, ruleset/,
   );
 });
 
@@ -43,7 +43,7 @@ test('openaiAgents: observe mode constructs without a policy source', () => {
 
 test('openaiAgents: defaults to enforce mode (requires policy)', () => {
   // Default mode is `enforce`; calling without policy must throw.
-  assert.throws(() => openaiAgents({}), /requires policiesPath or ruleset/);
+  assert.throws(() => openaiAgents({}), /requires policiesPath, ruleset/);
 });
 
 test('openaiAgents: invalid mode throws TypeError', () => {
