@@ -215,6 +215,47 @@ test('#1: a sink that throws never breaks enforcement (best-effort)', async () =
   assert.equal(r.behavior.type, 'rejectContent', 'tool still blocked despite sink failure');
 });
 
+test('#1 (audit): decision uploads are bounded — excess dropped, NDJSON unaffected', async () => {
+  // A sink that NEVER resolves simulates a Fortress outage. With a cap of 2,
+  // only 2 posts may be in flight; further decisions are dropped from the live
+  // post (still enforced + still recorded locally).
+  let inFlight = 0;
+  const sink = () => { inFlight++; return new Promise(() => {}); }; // never settles
+  const { recorded, decisionLogger, logger } = stubLoggers();
+  const guard = wmaToolInputGuardrail({
+    ruleset: DENY_RULESET, decisionLogger, logger,
+    fortressDecisionSink: sink, agentId: 'bot', signalsSalt: 'x'.repeat(32),
+    maxDecisionUploadsInFlight: 2,
+  });
+  // Fire 5 tool calls. All 5 must still be ENFORCED + recorded; only 2 posted.
+  for (let i = 0; i < 5; i++) {
+    const r = await guard.run({ agent: { name: 'bot' }, toolCall: TOOL_CALL });
+    assert.equal(r.behavior.type, 'rejectContent');
+  }
+  assert.equal(inFlight, 2, 'in-flight posts capped at maxDecisionUploadsInFlight');
+  assert.equal(recorded.length, 5, 'all 5 decisions still recorded to NDJSON (durable)');
+});
+
+test('#1 (audit): a SYNCHRONOUSLY-throwing sink does not leak the in-flight counter', async () => {
+  // If the counter leaked on a sync throw, after maxInFlight throws every later
+  // decision would be dropped. Assert posts keep flowing (counter returns to 0).
+  let calls = 0;
+  const sink = () => { calls++; throw new Error('sync boom'); };
+  const { recorded, decisionLogger, logger } = stubLoggers();
+  const guard = wmaToolInputGuardrail({
+    ruleset: DENY_RULESET, decisionLogger, logger,
+    fortressDecisionSink: sink, agentId: 'bot', signalsSalt: 'x'.repeat(32),
+    maxDecisionUploadsInFlight: 2,
+  });
+  for (let i = 0; i < 5; i++) {
+    const r = await guard.run({ agent: { name: 'bot' }, toolCall: TOOL_CALL });
+    assert.equal(r.behavior.type, 'rejectContent');
+    await tick(); // let the deferred sink + finally settle
+  }
+  assert.equal(calls, 5, 'every decision was attempted — counter never wedged from sync throws');
+  assert.equal(recorded.length, 5);
+});
+
 test('#1: factory auto-wires a decision sink when fortress policies are set', () => {
   const wma = openaiAgents({
     mode: 'enforce', agentId: 'support_bot',

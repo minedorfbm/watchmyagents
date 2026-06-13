@@ -110,6 +110,32 @@ export interface WMAGuardrailOptions {
   decisionLogger?: WMADecisionLogger;
   /** Inject an existing ContextTracker (testing). */
   tracker?: WMAContextTracker;
+  /** v1.4.6 — agent id used for the NDJSON path segment + native_agent_id.
+   *  Defaults to 'openai-agents' when un-named. */
+  agentId?: string;
+  /** v1.4.6 — a live policy source (e.g. FortressPolicySource). The guardrail
+   *  single-flight-starts it then reads current() on every call. */
+  fortressPolicySource?: {
+    start(): Promise<void>;
+    current(): { policies: unknown[]; default?: { action: string } };
+  };
+  /** v1.4.7 — best-effort sink the guardrail fires each decision to
+   *  (fire-and-forget). Built by openaiAgents() from policies.source='fortress'. */
+  fortressDecisionSink?: (payload: object) => unknown | Promise<unknown>;
+  /** v1.4.7 — salt for hashing session/input in the Fortress decision payload
+   *  (defaults to WMA_SIGNALS_SALT). Without it, those hashes are null. */
+  signalsSalt?: string;
+  /** v1.4.7 — cap on concurrent in-flight decision uploads; excess are dropped
+   *  best-effort (NDJSON stays durable). Default: 32. */
+  maxDecisionUploadsInFlight?: number;
+  /** v1.4 Codex #4 — per-tool argument aliases ({ tool: { nativeField: canonical } }). */
+  toolInputs?: Record<string, Record<string, string>>;
+  /** v1.4 F-32 — byte caps on captured tool args / results. Default 256 KB. */
+  maxArgBytes?: number;
+  maxResultBytes?: number;
+  /** v1.4.1 F-35 — explicit escape hatch to allow ALL tool calls when no policy
+   *  source is configured (demos/smoke tests only). */
+  allowAllWhenUnconfigured?: boolean;
 }
 
 /**

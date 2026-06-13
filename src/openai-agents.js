@@ -163,6 +163,7 @@ export function openaiAgents(options = {}) {
     agentId:         options.agentId,            // v1.4.6: NDJSON path + native_agent_id
     fortressPolicySource,                        // v1.4.6: live Fortress ruleset (or null)
     fortressDecisionSink,                        // v1.4.7 #1: ship decisions (or null)
+    maxDecisionUploadsInFlight: options.maxDecisionUploadsInFlight,  // v1.4.8: backpressure cap
     signalsSalt:     options.signalsSalt || process.env.WMA_SIGNALS_SALT,  // hash session/input
     policiesPath:    options.policiesPath,
     ruleset:         options.ruleset,

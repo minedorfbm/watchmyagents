@@ -29,12 +29,31 @@ Sign in to the Fortress dashboard → **Settings → API Keys → Generate** →
 ```bash
 # .env
 WMA_API_KEY=wma_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+WMA_FORTRESS_BASE_URL=https://<project>.supabase.co/functions/v1   # for Fortress policies + decisions
+WMA_SIGNALS_SALT=<stable per-customer salt>   # hashes session/input in uploads
 WMA_LOG_DIR=./watchmyagents-logs          # optional; default shown
 WMA_TEAM_ID=customer-support              # optional; manual team tagging
-# WMA_POLICIES_SOURCE handling for Fortress-pulled policies arrives in 1.3.1
 ```
 
-Today the adapter loads policies from a local file via `policiesPath`. Fortress-pulled policies for this adapter land in a 1.3.x patch.
+**Policy source (v1.4.6+).** The adapter can load policies two ways:
+- **Fortress (recommended)** — `policies: { source: 'fortress' }` pulls the ruleset
+  live from Fortress (the same control plane `wma-shield` uses for Anthropic) and
+  refreshes it in the background. Requires `agentId` + `WMA_API_KEY` +
+  `WMA_FORTRESS_BASE_URL`. This is what the Fortress "Register an OpenAI agent"
+  onboarding gives you.
+- **Local file** — `policiesPath: './policies.json'` (or an in-memory `ruleset`),
+  for tests / air-gapped setups.
+
+```typescript
+import { openaiAgents } from 'watchmyagents/openai-agents';
+
+const wma = openaiAgents({
+  mode: 'enforce',
+  agentId: 'support_bot',                 // your Fortress-registered agent id
+  policies: { source: 'fortress' },       // WMA_API_KEY + WMA_FORTRESS_BASE_URL from env
+  // policies: { source: 'fortress', uploadDecisions: false }  // ← keep decisions local-only
+});
+```
 
 ### 4. Wire it up — two patterns
 
@@ -190,20 +209,23 @@ attachWmaWatch(runner, {
 
 ## What gets sent to Fortress
 
-Tool arguments and results stay LOCAL. The anonymizer converts WMAAction → signals payload (salted hashes, no raw values) and pushes to `WMA_FORTRESS_BASE_URL/upload-signals` if `WMA_API_KEY` is set. See [CONTAINMENT.md](../CONTAINMENT.md) for the full egress model.
+Tool arguments and results stay LOCAL. The anonymizer converts WMAAction → a signals payload (salted hashes, no raw values). Two egress paths, both anonymized — see [CONTAINMENT.md](../CONTAINMENT.md) for the full model:
+
+- **Signals** — aggregated counts + salted IoC hashes, uploaded to `ingest-signals` (run `wma-upload-fortress --provider openai-agents --agent-id <id>` against the NDJSON, or the Watch path).
+- **Decisions (v1.4.7+)** — when `policies: { source: 'fortress' }` is set, the guardrail ships each Shield decision to `ingest-decisions` **fire-and-forget** (off the hot path). The payload carries `provider: 'openai-agents'`, `native_agent_id`, the decision/rule, salted `session_hash`/`event_id_hash`/`input_hash`, and `enforcement_delivered` (always `true` for an enforced deny/interrupt — the in-process guardrail blocks synchronously). The local NDJSON `shield_decision` row is the durable record; a failed upload never blocks the tool call. In-flight uploads are bounded (`maxDecisionUploadsInFlight`, default 32) — under a Fortress outage the excess is dropped from the live post (still in NDJSON). Opt out with `policies: { uploadDecisions: false }` to keep decisions local-only.
 
 ## Compatibility
 
 - Node.js: **20+** (matches the WMA SDK baseline and `@openai/agents`'s requirement)
-- TypeScript: any version — types live in `src/sources/openai-agents-js.d.ts`
+- TypeScript: any version — `import { openaiAgents } from 'watchmyagents/openai-agents'` is fully typed (`src/openai-agents.d.ts`); the low-level escape hatches are typed in `src/sources/openai-agents-js.d.ts`.
 - `@openai/agents` version range: **`^0.2.0`** (declared in `package.json#peerDependencies`). Real fixtures in `test/fixtures/openai-agents-events/` were captured against 0.2.x and the adapter's lifecycle event signatures match that line. Older 0.1.x lacked AgentHooks ergonomics the adapter relies on.
 
-## Limits + known gaps (v1.3.0)
+## Limits + known gaps (v1.4.8)
 
 | Gap | Workaround |
 |---|---|
 | Streaming mode behavior under Tool Input Guardrails not formally verified | We expect the SDK to honor guardrails in streaming mode (the SDK code paths are the same); the test fixtures cover non-streaming today. Verification with a streaming smoke test before v1.3.1. |
-| Fortress-pulled policies via `WMA_POLICIES_SOURCE=fortress` not wired in this adapter yet | Use `policiesPath` with a local file in v1.3.0; Fortress pull lands in v1.3.x patch |
+| Decision uploads are live fire-and-forget — a short-lived process can lose in-flight posts on exit | The NDJSON `shield_decision` row is durable; a batch backfill (NDJSON → `ingest-decisions`) is planned for fully-durable short runs |
 | Tool Output Guardrails (post-execution filter) not exposed | Add only if customer demand — Shield's pre-tool deny covers 95% of the exfil-prevention use case |
 | Python Agents SDK | Separate package `watchmyagents-py` planned for v1.4.0 (Pattern 2 — pip-installable thin client that talks to a Node Shield daemon over UNIX socket) |
 

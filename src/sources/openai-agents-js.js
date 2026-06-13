@@ -523,6 +523,15 @@ export function wmaToolInputGuardrail(options = {}) {
     ? options.getTeamId
     : () => teamTracker.bootstrap(sessionId);
 
+  // v1.4.8 (P2 audit): bound the best-effort decision uploads. A Fortress
+  // outage + a high tool-call rate could otherwise accumulate unbounded
+  // in-flight POSTs in the agent process. We cap concurrency and DROP excess
+  // (the NDJSON shield_decision row is the durable record), with a throttled
+  // stderr summary so the operator notices sustained backpressure.
+  const maxDecisionUploadsInFlight = options.maxDecisionUploadsInFlight ?? 32;
+  let decisionUploadsInFlight = 0;
+  let decisionUploadsDropped = 0;
+
   // Lazily load the ruleset on first invocation if a path was given.
   // v1.4.6: SINGLE-FLIGHT start. start() creates a setInterval, so two
   // concurrent first tool-calls must NOT both call it (that leaks a second
@@ -643,21 +652,43 @@ export function wmaToolInputGuardrail(options = {}) {
         // enforcement_delivered (the v1.4.6 prereqs) so Fortress attributes it
         // to the right runtime and surfaces degraded enforcement.
         if (options.fortressDecisionSink) {
-          try {
-            const payload = buildFortressDecisionPayload({
-              agentId: loggerAgentId,
-              provider: PROVIDER,
-              nativeAgentId: loggerAgentId,
-              sessionId,
-              rawEvent: event,
-              normalized: event,
-              result,
-              decidedInMs,
-              signalsSalt: options.signalsSalt,
-              enforcementDelivered: enforcedBlock ? true : undefined,
-            });
-            Promise.resolve(options.fortressDecisionSink(payload)).catch(() => undefined);
-          } catch { /* payload build must never break enforcement */ }
+          if (decisionUploadsInFlight >= maxDecisionUploadsInFlight) {
+            // Backpressure: drop the live post (NDJSON keeps the record).
+            decisionUploadsDropped++;
+            if (decisionUploadsDropped === 1 || decisionUploadsDropped % 100 === 0) {
+              process.stderr.write(
+                `[wma/openai-agents] Fortress decision-upload backpressure: ${decisionUploadsDropped} ` +
+                `decision(s) dropped from the live post (still in local NDJSON); ` +
+                `in-flight cap=${maxDecisionUploadsInFlight}\n`,
+              );
+            }
+          } else {
+            let payload = null;
+            try {
+              payload = buildFortressDecisionPayload({
+                agentId: loggerAgentId,
+                provider: PROVIDER,
+                nativeAgentId: loggerAgentId,
+                sessionId,
+                rawEvent: event,
+                normalized: event,
+                result,
+                decidedInMs,
+                signalsSalt: options.signalsSalt,
+                enforcementDelivered: enforcedBlock ? true : undefined,
+              });
+            } catch { /* build error → skip the post; never break enforcement */ }
+            if (payload) {
+              decisionUploadsInFlight++;
+              // Defer the sink call INTO the promise chain so a synchronous
+              // throw becomes a rejection — the .finally then always runs and
+              // the in-flight counter can never leak (which would wedge the cap).
+              Promise.resolve()
+                .then(() => options.fortressDecisionSink(payload))
+                .catch(() => undefined)
+                .finally(() => { decisionUploadsInFlight--; });
+            }
+          }
         }
 
         // 5. Watch log (the event itself, separate from the decision).
