@@ -130,6 +130,7 @@ export function openaiAgents(options = {}) {
       apiKey,
       base,
       anthropicAgentId: options.agentId,   // scopes get-policies by native agent id
+      provider: adapterMeta.provider,      // v1.4.9: 'openai-agents' → Fortress scopes by (provider, native_agent_id)
       requireSignedPolicies: options.policies.requireSignedPolicies,
       failMode: options.policies.failMode,
     });

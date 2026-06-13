@@ -83,15 +83,25 @@ function httpsJson(method, url, headers, body, timeoutMs = DEFAULT_TIMEOUT_MS) {
  * @param {object} opts
  * @param {string} opts.apiKey - wma_xxx
  * @param {string} opts.base - Fortress base URL (https://x.supabase.co/functions/v1)
- * @param {string} [opts.anthropicAgentId] - optional filter
+ * @param {string} [opts.anthropicAgentId] - optional native agent id filter
+ * @param {string} [opts.provider] - runtime provider (default 'anthropic-managed')
  * @returns {Promise<{ ok: true, policies: array, signing_keys: array, fetched_at: string }>}
  */
-export async function fetchPolicies({ apiKey, base, anthropicAgentId }) {
+// v1.4.9: pure, testable get-policies URL builder. Always carries `provider`
+// so a provider-aware Fortress can scope by (provider, native_agent_id) — an
+// OpenAI agent id is NOT in the `agent_…` shape. Harmless on the older Fortress
+// that ignores unknown query params.
+export function buildGetPoliciesUrl(base, { anthropicAgentId, provider = 'anthropic-managed' } = {}) {
   let url = fortressEndpoint(base, 'get-policies');
-  if (anthropicAgentId) {
-    const sep = url.includes('?') ? '&' : '?';
-    url += `${sep}agent_id=${encodeURIComponent(anthropicAgentId)}`;
-  }
+  const params = [];
+  if (anthropicAgentId) params.push(`agent_id=${encodeURIComponent(anthropicAgentId)}`);
+  params.push(`provider=${encodeURIComponent(provider)}`);
+  url += (url.includes('?') ? '&' : '?') + params.join('&');
+  return url;
+}
+
+export async function fetchPolicies({ apiKey, base, anthropicAgentId, provider = 'anthropic-managed' }) {
+  const url = buildGetPoliciesUrl(base, { anthropicAgentId, provider });
   const { status, body } = await httpsJson('GET', url, {
     authorization: `Bearer ${apiKey}`,
     accept: 'application/json',
@@ -195,12 +205,16 @@ const ROOT_PUBLIC_KEY = (() => {
 })();
 
 export class FortressPolicySource {
-  constructor({ apiKey, base, anthropicAgentId, refreshIntervalMs = 5 * 60_000, onError, onRefresh, requireSignedPolicies, failMode }) {
+  constructor({ apiKey, base, anthropicAgentId, provider = 'anthropic-managed', refreshIntervalMs = 5 * 60_000, onError, onRefresh, requireSignedPolicies, failMode }) {
     if (!apiKey) throw new Error('FortressPolicySource: apiKey required');
     if (!base) throw new Error('FortressPolicySource: base URL required');
     this.apiKey = apiKey;
     this.base = base;
     this.anthropicAgentId = anthropicAgentId;
+    // v1.4.9: runtime provider, sent to get-policies so Fortress scopes by
+    // (provider, native_agent_id). Defaults to anthropic-managed (the Anthropic
+    // shield path doesn't pass it); the OpenAI factory passes 'openai-agents'.
+    this.provider = provider;
     this.refreshIntervalMs = refreshIntervalMs;
     this.onError = onError || (() => {});
     this.onRefresh = onRefresh || (() => {});
@@ -257,6 +271,7 @@ export class FortressPolicySource {
       apiKey: this.apiKey,
       base: this.base,
       anthropicAgentId: this.anthropicAgentId,
+      provider: this.provider,
     });
   }
 
