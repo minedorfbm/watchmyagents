@@ -139,15 +139,54 @@ test('v1.4.11: guardedLookup blocks localhost (resolves to loopback — the rebi
 
 // ── v1.4.11: opt-out for self-hosted Fortress on a private network ────────
 
-test('v1.4.11: WMA_FORTRESS_ALLOW_PRIVATE_IPS=1 lets a private literal + resolution through', async () => {
+test('v1.4.13: ALLOW_PRIVATE_IPS un-blocks RFC1918 ONLY — loopback/metadata STILL blocked', async () => {
   const saved = process.env.WMA_FORTRESS_ALLOW_PRIVATE_IPS;
   process.env.WMA_FORTRESS_ALLOW_PRIVATE_IPS = '1';
   try {
+    // RFC1918 private → allowed with the flag (legit self-hosted Fortress).
     assert.doesNotThrow(() => assertSafeFortressBase('https://10.0.0.5/functions/v1'));
-    const { err } = await lookupP('127.0.0.1');
-    assert.ifError(err);   // guard disabled → loopback allowed
+    assert.doesNotThrow(() => assertSafeFortressBase('https://192.168.1.10/functions/v1'));
+    const okPriv = await lookupP('10.0.0.5');
+    assert.ifError(okPriv.err);
+    // Codex P2: the flag must NOT open loopback or cloud metadata.
+    assert.throws(() => assertSafeFortressBase('https://127.0.0.1/functions/v1'), /ALWAYS blocked|loopback/i);
+    assert.throws(() => assertSafeFortressBase('https://169.254.169.254/functions/v1'), /ALWAYS blocked|loopback|metadata/i);
+    const loop = await lookupP('127.0.0.1');
+    assert.ok(loop.err, 'loopback still refused even with the flag');
+    const meta = await lookupP('169.254.169.254');
+    assert.ok(meta.err, 'cloud metadata still refused even with the flag');
   } finally {
     if (saved === undefined) delete process.env.WMA_FORTRESS_ALLOW_PRIVATE_IPS;
     else process.env.WMA_FORTRESS_ALLOW_PRIVATE_IPS = saved;
   }
+});
+
+// ── v1.4.13 (Codex P2): completed non-global blocklist ───────────────────
+
+test('v1.4.13: CGNAT / TEST-NET / benchmarking / multicast / reserved / broadcast are blocked', () => {
+  for (const ip of [
+    '100.64.0.1',      // CGNAT 100.64/10
+    '192.0.0.1',       // IETF protocol 192.0.0/24
+    '192.0.2.1',       // TEST-NET-1
+    '198.18.0.1',      // benchmarking 198.18/15
+    '198.51.100.1',    // TEST-NET-2
+    '203.0.113.1',     // TEST-NET-3
+    '224.0.0.1',       // multicast
+    '239.255.255.250', // multicast (SSDP)
+    '240.0.0.1',       // reserved/future
+    '255.255.255.255', // broadcast
+  ]) {
+    assert.throws(() => assertSafeFortressBase(`https://${ip}/functions/v1`), /SSRF guard|refusing/i, ip);
+  }
+});
+
+test('v1.4.13: a normal public IP + the IPv4-mapped public form still pass', () => {
+  assert.doesNotThrow(() => assertSafeFortressBase('https://8.8.8.8/functions/v1'));
+  assert.doesNotThrow(() => assertSafeFortressBase('https://[::ffff:8.8.8.8]/functions/v1'));
+  assert.doesNotThrow(() => assertSafeFortressBase('https://1.1.1.1/functions/v1'));
+});
+
+test('v1.4.13: CGNAT / metadata via IPv4-mapped IPv6 is also blocked', () => {
+  assert.throws(() => assertSafeFortressBase('https://[::ffff:100.64.0.1]/x'), /SSRF guard|refusing/i);
+  assert.throws(() => assertSafeFortressBase('https://[::ffff:169.254.169.254]/x'), /SSRF guard|refusing/i);
 });
