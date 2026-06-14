@@ -87,14 +87,25 @@ function httpsJson(method, url, headers, body, timeoutMs = DEFAULT_TIMEOUT_MS) {
  * @param {string} [opts.provider] - runtime provider (default 'anthropic-managed')
  * @returns {Promise<{ ok: true, policies: array, signing_keys: array, fetched_at: string }>}
  */
-// v1.4.9: pure, testable get-policies URL builder. Always carries `provider`
-// so a provider-aware Fortress can scope by (provider, native_agent_id) — an
-// OpenAI agent id is NOT in the `agent_…` shape. Harmless on the older Fortress
-// that ignores unknown query params.
+// v1.4.10: pure, testable get-policies URL builder. Always carries `provider`.
+// The AGENT-ID PARAM NAME is provider-dependent and this matters:
+//   - anthropic-managed → `agent_id` (legacy). Fortress resolves by
+//     anthropic_agent_id, which works for ALL Anthropic agents including legacy
+//     rows whose native_agent_id was never backfilled.
+//   - other providers (openai-agents) → `native_agent_id` (canonical). Fortress
+//     resolves by (provider, native_agent_id). This is REQUIRED: an OpenAI id is
+//     not in the `agent_…` shape and its anthropic_agent_id is null. If we sent
+//     it as `agent_id`, Fortress's `useLegacyLookup` (native absent + agent_id
+//     present) forces the anthropic_agent_id lookup → the OpenAI agent isn't
+//     found → empty policies → default-allow → enforcement SILENTLY OFF (a
+//     fail-OPEN, worse than fail-closed). v1.4.9 had this bug.
 export function buildGetPoliciesUrl(base, { anthropicAgentId, provider = 'anthropic-managed' } = {}) {
   let url = fortressEndpoint(base, 'get-policies');
   const params = [];
-  if (anthropicAgentId) params.push(`agent_id=${encodeURIComponent(anthropicAgentId)}`);
+  if (anthropicAgentId) {
+    const key = provider === 'anthropic-managed' ? 'agent_id' : 'native_agent_id';
+    params.push(`${key}=${encodeURIComponent(anthropicAgentId)}`);
+  }
   params.push(`provider=${encodeURIComponent(provider)}`);
   url += (url.includes('?') ? '&' : '?') + params.join('&');
   return url;
