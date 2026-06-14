@@ -2,10 +2,13 @@
 
 > **Paste this whole file into a fresh Claude Code session before starting.**
 > You are building ONE WatchMyAgents source adapter for a specific agent
-> framework, following the **Pattern 1** (in-process, customer-instrumented)
-> model. The **OpenAI Agents adapter is your reference** — copy its structure.
-> A separate "main session" owns the shared contract, integration, and all
-> releases. You produce the adapter; you do NOT bump versions or publish.
+> framework. It is a **Pattern 1** adapter (built natively in the Node SDK —
+> like the already-shipped Anthropic Managed and OpenAI adapters; *not* the
+> planned **Pattern 2** = `watchmyagents-py` Python bridge). This brief targets
+> the **in-process integration shape**, so the **OpenAI Agents adapter is your
+> reference** — copy its structure. A separate "main session" owns the shared
+> contract, integration, and all releases. You produce the adapter; you do NOT
+> bump versions or publish.
 
 ---
 
@@ -23,12 +26,18 @@ Everything in WMA operates on ONE canonical object: the **`WMAAction`** (defined
 in `src/sources/contract.js`). Your adapter's whole job is: **translate your
 framework's native events → `WMAAction`**, and **wire the Shield interception**.
 
-Three integration shapes exist; you are doing **Pattern 1**:
-- **Pattern 1 — in-process library** (OpenAI Agents SDK, Vercel AI SDK, …): WMA
-  is wired into the customer's agent code via the framework's hooks/middleware.
-  *This is you.*
-- Pattern 2 — poll/SSE daemon (Anthropic Managed): WMA polls a cloud API.
-- Pattern 3 — hook command (Claude Code): WMA is a command invoked per tool call.
+**Terminology (be precise):** *Pattern 1* = an adapter built natively in this
+Node SDK (all of ours so far). *Pattern 2* = the future `watchmyagents-py`
+Python thin-client → Node daemon bridge. ALL the adapters below are **Pattern 1**.
+
+Within Pattern 1 there are three **integration SHAPES** — they only decide which
+existing adapter you copy:
+- **In-process library** (template: `src/sources/openai-agents-js.js`) — OpenAI
+  Agents SDK, Vercel AI SDK, LangGraph.js, Google GenAI… WMA is wired into the
+  agent code via the framework's hooks/middleware. **← this brief is for this shape.**
+- **Poll / managed cloud** (template: `src/sources/anthropic-managed.js`) —
+  Anthropic Managed, Vertex Agent Engine, Bedrock AgentCore… WMA polls a cloud API.
+- **Hook command** (template: `src/sources/claude-code.js`) — Claude Code / Cowork.
 
 ---
 
@@ -86,7 +95,7 @@ Three integration shapes exist; you are doing **Pattern 1**:
 
 ---
 
-## 5. The integration shape (Pattern 1) — what to actually build
+## 5. The in-process integration shape — what to actually build
 
 **STEP 0 — VERIFY FIRST (don't skip).** Before writing any adapter code, confirm
 your framework actually exposes:
