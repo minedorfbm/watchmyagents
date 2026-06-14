@@ -119,12 +119,12 @@ test('F-19: different salts on the same custom tool → DIFFERENT hashes (per-te
   const a = buildFortressDecisionPayload({
     ...baseInput,
     normalized: { tool_name: 'client_acme_export' },
-    signalsSalt: 'salt-tenant-A',
+    signalsSalt: 'salt-tenant-A-0123456789',   // >=16 (v1.4.12 salt floor)
   });
   const b = buildFortressDecisionPayload({
     ...baseInput,
     normalized: { tool_name: 'client_acme_export' },
-    signalsSalt: 'salt-tenant-B',
+    signalsSalt: 'salt-tenant-B-0123456789',
   });
   assert.notEqual(a.tool_name, b.tool_name);
 });

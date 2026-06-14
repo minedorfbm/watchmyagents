@@ -77,6 +77,7 @@ const WELL_KNOWN_TOOLS = new Set([
  */
 export function hashWithSalt(value, salt) {
   if (value == null) return null;
+  assertStrongSalt(salt, 'hashWithSalt');
   const s = typeof value === 'string' ? value : JSON.stringify(value);
   return 'sha256:' + createHash('sha256').update(salt).update(s).digest('hex').slice(0, 32);
 }
@@ -84,6 +85,25 @@ export function hashWithSalt(value, salt) {
 // Generate a customer salt (if none provided)
 export function generateSalt() {
   return randomBytes(16).toString('hex');
+}
+
+// v1.4.12 (audit residual): the IoC hashes are only non-reversible if the salt
+// is strong. IoCs are low-entropy (IPs, ports, common URLs/commands), so a
+// weak/short salt lets anyone who obtains the uploaded ioc_hashes[] brute-force
+// them back to the raw values — breaking Containment-at-rest. The wma-* CLIs
+// already enforce a >=16-char floor; this moves it INTO the library so a
+// PROGRAMMATIC consumer (SignalsAggregator, hashWithSalt) can't bypass it with
+// a weak salt. 16 chars matches the CLI floor + generateSalt()'s 32-hex output.
+export const MIN_SALT_LENGTH = 16;
+export function assertStrongSalt(salt, ctx = 'salt') {
+  if (typeof salt !== 'string' || salt.length < MIN_SALT_LENGTH) {
+    const got = typeof salt === 'string' ? `${salt.length} chars` : typeof salt;
+    throw new Error(
+      `${ctx}: salt must be a string of at least ${MIN_SALT_LENGTH} characters (got ${got}). ` +
+      'A weak salt makes the IoC hashes brute-forceable. Use generateSalt() or a ' +
+      'stable >=16-char per-customer secret (WMA_SIGNALS_SALT).',
+    );
+  }
 }
 
 // ── Tool name normalization (Containment hardening, v1.0.1 F-3) ────────
@@ -106,7 +126,7 @@ export function normalizeToolName(toolName, salt) {
   const s = String(toolName);
   if (s.length === 0) return null;
   if (WELL_KNOWN_TOOLS.has(s)) return s;
-  if (!salt) throw new Error('normalizeToolName requires a salt to hash custom tool names');
+  assertStrongSalt(salt, 'normalizeToolName');
   return 'tool_hash:' + createHash('sha256').update(salt).update(s).digest('hex').slice(0, 32);
 }
 
@@ -223,7 +243,7 @@ function extractIocs(entry, salt) {
 
 export class SignalsAggregator {
   constructor({ salt } = {}) {
-    if (!salt) throw new Error('SignalsAggregator requires a salt');
+    assertStrongSalt(salt, 'SignalsAggregator');
     this.salt = salt;
     this.counts = Object.create(null);          // action_type → count
     this.toolCounts = Object.create(null);      // tool_name → count
@@ -369,7 +389,7 @@ export class SignalsAggregator {
 // ── Streaming convenience: anonymize a whole NDJSON file/dir ────────────
 
 export async function anonymizeFile(filePath, { salt } = {}) {
-  if (!salt) throw new Error('anonymizeFile requires a salt');
+  assertStrongSalt(salt, 'anonymizeFile');
   const agg = new SignalsAggregator({ salt });
   const stream = createReadStream(filePath, { encoding: 'utf8' });
   const rl = createInterface({ input: stream, crlfDelay: Infinity });

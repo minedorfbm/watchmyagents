@@ -12,13 +12,17 @@
 // it — only the leak-y field is omitted.
 
 import { createHash } from 'node:crypto';
-import { normalizeToolName } from '../anonymizer.js';
+import { normalizeToolName, MIN_SALT_LENGTH } from '../anonymizer.js';
 
 // Salted SHA-256 hash with the same 32-char truncation as the anonymizer
 // and the rest of Shield's decision flow. Returns null for nullish input
 // or when no salt is configured (fail-safe omission).
+// v1.4.12 (audit residual): a weak/short salt yields a brute-forceable hash, so
+// treat it like NO salt — OMIT the field rather than emit a weak hash. This is
+// the fail-safe / Containment-safe choice and (unlike throwing) can't break the
+// synchronous decision-payload build in shield.js's fireToFortress.
 function hashWithSaltOpt(value, salt) {
-  if (value == null || !salt) return null;
+  if (value == null || typeof salt !== 'string' || salt.length < MIN_SALT_LENGTH) return null;
   const s = typeof value === 'string' ? value : JSON.stringify(value);
   return 'sha256:' + createHash('sha256').update(salt).update(s).digest('hex').slice(0, 32);
 }
