@@ -106,7 +106,7 @@ import { Agent, Runner } from '@openai/agents';
 import {
   wmaToolInputGuardrail,
   attachWmaWatch,
-} from 'watchmyagents/src/sources/openai-agents-js.js';
+} from 'watchmyagents/openai-agents';
 
 const wmaShield = wmaToolInputGuardrail({
   policiesPath: './examples/policies/mitre-starter.json',
@@ -131,7 +131,7 @@ import { Agent, run } from '@openai/agents';
 import {
   wmaToolInputGuardrail,
   attachWmaWatchToAgent,
-} from 'watchmyagents/src/sources/openai-agents-js.js';
+} from 'watchmyagents/openai-agents';
 
 const wmaShield = wmaToolInputGuardrail({
   policiesPath: './examples/policies/mitre-starter.json',
@@ -154,14 +154,14 @@ That's it. NDJSON lands in `./watchmyagents-logs/openai-agents/`. The MITRE star
 
 See [docs/adapters/openai-agents-js.md](docs/adapters/openai-agents-js.md) for the full options reference + troubleshooting.
 
-## Supported runtimes (v1.3.0)
+## Supported runtimes
 
 | Runtime | Mode | Onboarding | Status |
 |---|---|---|---|
 | **Anthropic Managed Agents** | pull REST/SSE | API key (zero-touch) | ✓ shipped |
-| **OpenAI Agents SDK** (TypeScript/JS) | push (in-process hooks + guardrails) | 2 lines of code | ✓ v1.3.0 |
-| OpenAI Agents SDK (Python) | push (separate `watchmyagents-py` package) | — | planned v1.4.0 |
-| Claude Code (dynamic workflows) | push (hooks via `settings.json`) | — | planned v1.4.x |
+| **OpenAI Agents SDK** (TypeScript/JS) | push (in-process hooks + guardrails) | 2 lines of code, or Fortress "Register an OpenAI agent" | ✓ shipped (live Fortress policies + decisions since v1.4.6) |
+| OpenAI Agents SDK (Python) | push (separate `watchmyagents-py` package) | — | planned |
+| Claude Code / Cowork (hooks) | push (plugin hooks via `settings.json`) | — | planned (Phase 2.B) |
 | AWS Bedrock AgentCore | pull REST/SSE | similar to Anthropic | planned v1.5.0 |
 
 ## What gets logged

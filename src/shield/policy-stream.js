@@ -33,6 +33,7 @@ import { request as httpsRequest } from 'node:https';
 import { URL } from 'node:url';
 import { EventEmitter } from 'node:events';
 import { normalizeSseBuffer } from './sse.js';
+import { guardedLookup } from '../fortress/url.js';
 
 const RECONNECT_MIN_MS = 1_000;
 const RECONNECT_MAX_MS = 60_000;
@@ -109,6 +110,7 @@ export class PolicyStream extends EventEmitter {
         'connection': 'keep-alive',
       },
       rejectUnauthorized: true,
+      lookup: guardedLookup,   // v1.4.11: DNS-rebinding guard on the Fortress SSE
     }, (res) => {
       this._req = req;
 

@@ -11,7 +11,7 @@
 
 import { request as httpsRequest } from 'node:https';
 import { URL } from 'node:url';
-import { fortressEndpoint } from '../../fortress/url.js';
+import { fortressEndpoint, guardedLookup } from '../../fortress/url.js';
 
 const DEFAULT_TIMEOUT_MS = 15_000;
 // v1.1.2 F-17 (P3 Codex audit): cap on the total bytes we'll accumulate
@@ -41,6 +41,10 @@ function httpsJson(method, url, headers, body, timeoutMs = DEFAULT_TIMEOUT_MS) {
         ...(data ? { 'content-type': 'application/json', 'content-length': data.length } : {}),
       },
       rejectUnauthorized: true,
+      // v1.4.11 (Codex P1/P2): per-request DNS guard — reject a hostname that
+      // resolves to a private/loopback/link-local IP (DNS rebinding), and pin
+      // the connection to the checked address.
+      lookup: guardedLookup,
     };
     const req = httpsRequest(opts, (res) => {
       const chunks = [];

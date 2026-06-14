@@ -28,7 +28,7 @@ import { URL } from 'node:url';
 import { Logger, tightenMode } from '../src/logger.js';
 import { TokenTracker } from '../src/tokens.js';
 import { SignalsAggregator } from '../src/anonymizer.js';
-import { resolveFortressBase, fortressEndpoint } from '../src/fortress/url.js';
+import { resolveFortressBase, fortressEndpoint, guardedLookup } from '../src/fortress/url.js';
 import { cleanLabel } from '../src/labels.js';
 import { isValidAgentId, isValidSessionId, assertSafePathSegment } from '../src/validate.js';
 import { classifyAgentType } from '../src/typology.js';
@@ -107,6 +107,7 @@ function postJson(url, headers, body) {
       path: u.pathname + (u.search || ''),
       headers: { ...headers, 'content-type': 'application/json', 'content-length': data.length },
       rejectUnauthorized: true,
+      lookup: guardedLookup,   // v1.4.11: DNS-rebinding guard on the Fortress upload
     }, (res) => {
       const chunks = [];
       let receivedBytes = 0;

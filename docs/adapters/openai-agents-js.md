@@ -1,6 +1,6 @@
 # OpenAI Agents SDK adapter (TypeScript / JavaScript)
 
-**Status: v1.3.0 (Phase 2.A) — first adapter that observes a runtime which executes locally on the customer machine.**
+**Status: shipped (introduced v1.3.0, Phase 2.A) — the first adapter that observes a runtime which executes locally on the customer machine. Live Fortress policies + decision upload since v1.4.6.**
 
 This adapter integrates `watchmyagents` with the [OpenAI Agents SDK](https://openai.github.io/openai-agents-js/) (`@openai/agents` on npm). Customers add two lines to their existing agent code; WMA logs every lifecycle event locally and can block tool calls before execution via Shield policies.
 
@@ -67,7 +67,7 @@ import { Agent, Runner } from '@openai/agents';
 import {
   wmaToolInputGuardrail,
   attachWmaWatch,
-} from 'watchmyagents/src/sources/openai-agents-js.js';
+} from 'watchmyagents/openai-agents';
 
 const wmaShield = wmaToolInputGuardrail({
   policiesPath: './examples/policies/mitre-starter.json',
@@ -93,7 +93,7 @@ import { Agent, run } from '@openai/agents';
 import {
   wmaToolInputGuardrail,
   attachWmaWatchToAgent,
-} from 'watchmyagents/src/sources/openai-agents-js.js';
+} from 'watchmyagents/openai-agents';
 
 const wmaShield = wmaToolInputGuardrail({
   policiesPath: './examples/policies/mitre-starter.json',
@@ -161,7 +161,7 @@ Three resolution channels for `team_id`, in precedence order:
 Every `shield_decision` row carries `prev_hash` + `chain_hash` (SHA-256). The audit chain is local-only tamper-evidence. Verify with:
 
 ```typescript
-import { verifyDecisionChain } from 'watchmyagents/src/shield/decision-chain.js';
+import { verifyDecisionChain } from 'watchmyagents';
 import { readFile } from 'node:fs/promises';
 
 const lines = (await readFile('./watchmyagents-logs/openai-agents/2026-06-09.ndjson', 'utf8'))

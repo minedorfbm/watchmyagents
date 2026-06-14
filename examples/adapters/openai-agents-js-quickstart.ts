@@ -26,7 +26,7 @@ import { z } from 'zod';
 import {
   wmaToolInputGuardrail,
   attachWmaWatch,
-} from 'watchmyagents/src/sources/openai-agents-js.js';
+} from 'watchmyagents/openai-agents';
 
 // ── Tools the agent can call ───────────────────────────────────────────
 

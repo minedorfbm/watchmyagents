@@ -29,7 +29,7 @@ import { join, resolve } from 'node:path';
 import { createReadStream } from 'node:fs';
 import { createInterface } from 'node:readline';
 import { SignalsAggregator } from '../src/anonymizer.js';
-import { resolveFortressBase, fortressEndpoint } from '../src/fortress/url.js';
+import { resolveFortressBase, fortressEndpoint, guardedLookup } from '../src/fortress/url.js';
 import { AnthropicManagedSource } from '../src/sources/anthropic-managed.js';
 import { cleanLabel } from '../src/labels.js';
 import { maybePrintVersionAndExit } from '../src/version.js';
@@ -97,6 +97,7 @@ function postJson(url, headers, body) {
           'content-length': data.length,
         },
         rejectUnauthorized: true,
+        lookup: guardedLookup,   // v1.4.11: DNS-rebinding guard on the Fortress upload
       },
       (res) => {
         const chunks = [];
