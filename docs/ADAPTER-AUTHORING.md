@@ -2,13 +2,13 @@
 
 > **Paste this whole file into a fresh Claude Code session before starting.**
 > You are building ONE WatchMyAgents source adapter for a specific agent
-> framework. It is a **Pattern 1** adapter (built natively in the Node SDK —
-> like the already-shipped Anthropic Managed and OpenAI adapters; *not* the
-> planned **Pattern 2** = `watchmyagents-py` Python bridge). This brief targets
-> the **in-process integration shape**, so the **OpenAI Agents adapter is your
-> reference** — copy its structure. A separate "main session" owns the shared
-> contract, integration, and all releases. You produce the adapter; you do NOT
-> bump versions or publish.
+> framework. It is a **Pattern #2 (Instrumentation locale)** adapter — an SDK
+> library imported INSIDE the agent's process (like the already-shipped OpenAI
+> Agents adapter, which is your **reference template** — copy its structure).
+> (For the other patterns see the typology in §1: #1 API distante = Anthropic
+> Managed; #3 Lambda interceptor = AWS.) A separate "main session" owns the
+> shared contract, integration, and all releases. You produce the adapter; you
+> do NOT bump versions or publish.
 
 ---
 
@@ -26,18 +26,19 @@ Everything in WMA operates on ONE canonical object: the **`WMAAction`** (defined
 in `src/sources/contract.js`). Your adapter's whole job is: **translate your
 framework's native events → `WMAAction`**, and **wire the Shield interception**.
 
-**Terminology (be precise):** *Pattern 1* = an adapter built natively in this
-Node SDK (all of ours so far). *Pattern 2* = the future `watchmyagents-py`
-Python thin-client → Node daemon bridge. ALL the adapters below are **Pattern 1**.
-
-Within Pattern 1 there are three **integration SHAPES** — they only decide which
-existing adapter you copy:
-- **In-process library** (template: `src/sources/openai-agents-js.js`) — OpenAI
-  Agents SDK, Vercel AI SDK, LangGraph.js, Google GenAI… WMA is wired into the
-  agent code via the framework's hooks/middleware. **← this brief is for this shape.**
-- **Poll / managed cloud** (template: `src/sources/anthropic-managed.js`) —
-  Anthropic Managed, Vertex Agent Engine, Bedrock AgentCore… WMA polls a cloud API.
-- **Hook command** (template: `src/sources/claude-code.js`) — Claude Code / Cowork.
+**Pattern typology — by integration SHAPE** (the shape is the stable label and
+decides which template you copy; a separate build-PRIORITY number moves freely,
+the shapes don't):
+- **API distante** — a daemon (`wma-service install`) on the client machine,
+  OUTSIDE the agent process, polling a remote API. Template:
+  `src/sources/anthropic-managed.js`. (Anthropic Managed.)
+- **Instrumentation locale** — an SDK library the client `import`s /
+  `pip install`s, running INSIDE the agent process. Template:
+  `src/sources/openai-agents-js.js`. (OpenAI Agents, Vercel AI SDK, LangGraph.js,
+  Google GenAI, …) **← THIS BRIEF is for the Instrumentation locale shape.**
+- **Hook** — a command the host runtime invokes per event. Template:
+  `src/sources/claude-code.js`. (Claude Code / Cowork.)
+- **Lambda interceptor** — a Terraform/CDK module in the client's AWS. (AWS-hosted.)
 
 ---
 
@@ -154,8 +155,9 @@ Run `node --test` — your new tests pass, the existing suite still passes.
 
 ## 8. The one-line task
 
-> Build the WMA **Pattern-1** adapter for **`<FRAMEWORK NAME>`**, using the
-> OpenAI Agents adapter as the template. Verify the framework's tool-observe +
-> pre-tool-block surfaces FIRST. Normalize to `WMAAction` (validate every one),
-> wire Watch + Shield, write tests + a doc, and hand back a PR-ready set of NEW
-> files plus a note of any shared-contract change the main session must apply.
+> Build the WMA **Pattern #2 (Instrumentation locale, in-process)** adapter for
+> **`<FRAMEWORK NAME>`**, using the OpenAI Agents adapter as the template. Verify
+> the framework's tool-observe + pre-tool-block surfaces FIRST. Normalize to
+> `WMAAction` (validate every one), wire Watch + Shield, write tests + a doc, and
+> hand back a PR-ready set of NEW files plus a note of any shared-contract change
+> the main session must apply.
